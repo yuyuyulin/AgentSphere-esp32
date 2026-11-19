@@ -1,0 +1,29 @@
+name: Bug 反馈
+description: 报告编译失败、真机死机、音频异常、配网或协议问题
+labels: ["status:triage"]
+body:
+  - type: input
+    id: hardware
+    attributes:
+      label: 硬件板型与 ESP-IDF 版本
+      placeholder: "例如：Waveshare ESP32-S3-Touch-AMOLED-1.75C / ESP-IDF v6.1"
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 列出可稳定复现的操作步骤
+    validations:
+      required: true
+  - type: textarea
+    id: expected_actual
+    attributes:
+      label: 预期表现 vs 实际表现
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 脱敏串口日志 / Backtrace
+      description: 提交前请务必移除真实 Wi-Fi 密码、Token、私有域名等敏感信息

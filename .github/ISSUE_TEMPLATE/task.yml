@@ -1,0 +1,39 @@
+name: 开发任务
+description: 边界清晰、可被人类或 AI Agent 直接领取执行的工程任务
+labels: ["status:ready"]
+body:
+  - type: input
+    id: parent
+    attributes:
+      label: 关联需求 / 文档
+      placeholder: "例如：docs/architecture.md Step 0 / Refs #1"
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 实现范围与技术要求
+      description: 明确输入输出、架构层次与不可逾越的边界
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: 预期负责文件
+      description: 列出主要新增或修改的路径，减少多 Agent 并行冲突
+    validations:
+      required: true
+  - type: input
+    id: dependencies
+    attributes:
+      label: 前置依赖
+      placeholder: "例如：无 / 依赖 #2 PR 合入"
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: 验证与真机验收清单
+      description: 明确区分构建验证（idf.py build）与真机实测项
+    validations:
+      required: true

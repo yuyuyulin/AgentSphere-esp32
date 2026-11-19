@@ -1,0 +1,35 @@
+# ESP-IDF build artifacts & generated configs
+build/
+managed_components/
+dependencies.lock
+sdkconfig
+sdkconfig.old
+sdkconfig.ci*
+*.bin
+*.elf
+*.map
+
+# Local secrets & private test configs (never commit to public repo)
+.env
+.env.*
+*.pem
+*.key
+*.crt
+local_config.h
+wifi_secrets.h
+
+# IDE & editor files
+.vscode/
+.idea/
+.clangd/
+compile_commands.json
+*.swp
+*.swo
+*~
+
+# OS & tool caches
+.DS_Store
+Thumbs.db
+__pycache__/
+*.pyc
+.pytest_cache/

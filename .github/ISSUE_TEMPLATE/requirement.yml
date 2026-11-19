@@ -1,0 +1,30 @@
+name: 需求讨论 / 功能提案
+description: 提出新功能、新硬件板型支持或体验优化建议
+labels: ["status:triage"]
+body:
+  - type: textarea
+    id: goal
+    attributes:
+      label: 目标与场景
+      description: 描述用户问题、使用形态（插电桌面 / 随身手持 / 无屏设备）及预期体验
+    validations:
+      required: true
+  - type: textarea
+    id: scope
+    attributes:
+      label: 范围与非目标
+      description: 明确哪些在本次范围内、哪些留到后续迭代
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: 可观察验收标准
+      description: 列出可在真机上观察验证的通过条件
+    validations:
+      required: true
+  - type: textarea
+    id: open_questions
+    attributes:
+      label: 待澄清问题
+      description: 需要进一步讨论或真机实测确认的事项

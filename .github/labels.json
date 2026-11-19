@@ -1,0 +1,15 @@
+[
+  {"name":"status:triage","color":"d4c5f9","description":"需求待澄清或待拆分为开发任务"},
+  {"name":"status:ready","color":"c2e0c6","description":"边界与依赖就绪，可以领取"},
+  {"name":"status:in-progress","color":"1d76db","description":"已有明确开发者或 Agent 会话领取"},
+  {"name":"status:blocked","color":"b60205","description":"存在明确阻塞，禁止自动抢占"},
+  {"name":"status:review","color":"fbca04","description":"已提交 PR，等待检查与审阅"},
+  {"name":"status:acceptance","color":"f9d0c4","description":"代码已合入，等待真机实测验收"},
+  {"name":"area:board","color":"0052cc","description":"板级支持与硬件驱动（BSP / HAL）"},
+  {"name":"area:audio","color":"5319e7","description":"音频管线、Opus 编解码与端侧语音算法"},
+  {"name":"area:net","color":"0e8a16","description":"Wi-Fi 管理与本地 SoftAP 配网"},
+  {"name":"area:protocol","color":"1d76db","description":"HTTPS 引导认领、WSS 协议与 OTA"},
+  {"name":"area:ui","color":"e99695","description":"圆屏 LVGL 界面、皮肤引擎与无屏提示"},
+  {"name":"area:power","color":"fbca04","description":"PMIC 充放电、休眠、防烧屏与自动关机"},
+  {"name":"area:docs","color":"0075ca","description":"文档、协议规范与协作流程"}
+]

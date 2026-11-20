@@ -5,7 +5,9 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <ctime>
 #include <memory>
+#include <sys/time.h>
 
 #include "boards/board.h"
 #include "bsp/esp-bsp.h"
@@ -100,17 +102,19 @@ public:
             ESP_LOGE(kTag, "esp_codec_dev_open(spk) failed: %s", esp_err_to_name(err));
             return err;
         }
-        esp_codec_dev_set_out_vol(spk_dev_, 70);
+        esp_codec_dev_set_out_mute(spk_dev_, false);
+        esp_codec_dev_set_out_vol(spk_dev_, 95);
 
         err = esp_codec_dev_open(mic_dev_, &fs);
         if (err != ESP_OK) {
             ESP_LOGE(kTag, "esp_codec_dev_open(mic) failed: %s", esp_err_to_name(err));
             return err;
         }
-        esp_codec_dev_set_in_gain(mic_dev_, 24.0f);
+        esp_codec_dev_set_in_gain(mic_dev_, 36.0f);
 
         ready_ = true;
-        ESP_LOGI(kTag, "Audio initialized (ES8311 + ES7210 @ %dHz 16-bit mono)", kAudioSampleRateHz);
+        ESP_LOGI(kTag, "Audio initialized (ES8311 + ES7210 @ %dHz 16-bit mono, vol=95, mic_gain=36dB)",
+                 kAudioSampleRateHz);
         return ESP_OK;
     }
 
@@ -134,16 +138,21 @@ public:
                             static_cast<float>(kAudioSampleRateHz);
 
         int written = 0;
+        esp_err_t last_werr = ESP_OK;
         while (written < total_samples && !stop_requested_) {
             const int n = (total_samples - written) > kChunkSamples ? kChunkSamples : (total_samples - written);
             for (int i = 0; i < n; ++i) {
                 const float sample = std::sin(omega * static_cast<float>(written + i));
-                chunk[i] = static_cast<int16_t>(sample * 9000.0f);
+                chunk[i] = static_cast<int16_t>(sample * 24000.0f);
             }
-            esp_codec_dev_write(spk_dev_, chunk, n * static_cast<int>(sizeof(int16_t)));
+            last_werr = esp_codec_dev_write(spk_dev_, chunk, n * static_cast<int>(sizeof(int16_t)));
+            if (last_werr != ESP_OK) {
+                ESP_LOGE(kTag, "PlayTone write failed: %s", esp_err_to_name(last_werr));
+                break;
+            }
             written += n;
         }
-        return ESP_OK;
+        return last_werr;
     }
 
     esp_err_t RecordAndLoopback(int duration_ms) override {
@@ -228,6 +237,24 @@ public:
         if (I2cReadReg(dev_, 0x03, &chip_id, 1) == ESP_OK) {
             ESP_LOGI(kTag, "AXP2101 detected (chip_id=0x%02X)", chip_id);
         }
+
+        // Log current LDO rails and ensure ALDO1 = 3.3V (0x1C = (3300-500)/100) is enabled for audio/analog
+        uint8_t ldo_en0 = 0;
+        uint8_t ldo_en1 = 0;
+        uint8_t aldo1_v = 0;
+        I2cReadReg(dev_, 0x90, &ldo_en0, 1);
+        I2cReadReg(dev_, 0x91, &ldo_en1, 1);
+        I2cReadReg(dev_, 0x92, &aldo1_v, 1);
+        ESP_LOGI(kTag, "AXP2101 rails before init: LDO_EN0=0x%02X LDO_EN1=0x%02X ALDO1=0x%02X",
+                 ldo_en0, ldo_en1, aldo1_v);
+
+        I2cWriteReg(dev_, 0x92, 0x1C);  // ALDO1 = 3.3V
+        I2cWriteReg(dev_, 0x90, static_cast<uint8_t>(ldo_en0 | 0x01));  // Enable ALDO1
+        vTaskDelay(pdMS_TO_TICKS(20));
+
+        I2cReadReg(dev_, 0x90, &ldo_en0, 1);
+        I2cReadReg(dev_, 0x92, &aldo1_v, 1);
+        ESP_LOGI(kTag, "AXP2101 rails after init:  LDO_EN0=0x%02X ALDO1=0x%02X", ldo_en0, aldo1_v);
 
         // Enable battery voltage ADC (reg 0x30 bit 0) and fuel gauge (reg 0x18 bit 3)
         uint8_t reg_val = 0;
@@ -396,68 +423,102 @@ private:
 };
 
 // ---------------------------------------------------------------------------
-// PCF85063 RTC (0x51)
+// PCF85063 External RTC (0x51) with automatic ESP32-S3 internal RTC fallback
 // ---------------------------------------------------------------------------
 class Pcf85063RtcClock final : public RtcClock {
 public:
     explicit Pcf85063RtcClock(i2c_master_bus_handle_t bus) : bus_(bus) {}
 
     esp_err_t Init() override {
-        if (i2c_master_probe(bus_, kPcf85063Addr, 20) != ESP_OK) {
-            ESP_LOGW(kTag, "PCF85063 RTC not detected at 0x%02X", kPcf85063Addr);
-            return ESP_ERR_NOT_FOUND;
+        if (i2c_master_probe(bus_, kPcf85063Addr, 20) == ESP_OK) {
+            i2c_device_config_t cfg{};
+            cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
+            cfg.device_address = kPcf85063Addr;
+            cfg.scl_speed_hz = kI2cFreqHz;
+            if (i2c_master_bus_add_device(bus_, &cfg, &dev_) == ESP_OK) {
+                ext_ready_ = true;
+                ESP_LOGI(kTag, "External PCF85063 RTC initialized at 0x%02X", kPcf85063Addr);
+                return ESP_OK;
+            }
         }
 
-        i2c_device_config_t cfg{};
-        cfg.dev_addr_length = I2C_ADDR_BIT_LEN_7;
-        cfg.device_address = kPcf85063Addr;
-        cfg.scl_speed_hz = kI2cFreqHz;
-        esp_err_t err = i2c_master_bus_add_device(bus_, &cfg, &dev_);
-        if (err != ESP_OK) return err;
-
-        ready_ = true;
-        ESP_LOGI(kTag, "PCF85063 RTC initialized at 0x%02X", kPcf85063Addr);
+        // 1.75C does not populate external PCF85063; use ESP32-S3 internal system RTC.
+        ESP_LOGI(kTag, "Using ESP32-S3 internal RTC (syncs from server_time_ms / SNTP once online)");
+        struct timeval tv{};
+        gettimeofday(&tv, nullptr);
+        if (tv.tv_sec < 1700000000) {
+            // Initialize to a sane non-zero epoch (2026-01-01 00:00:00 UTC) until synced
+            tv.tv_sec = 1767225600;
+            tv.tv_usec = 0;
+            settimeofday(&tv, nullptr);
+        }
         return ESP_OK;
     }
 
     RtcTime ReadTime() override {
         RtcTime t{};
-        if (!ready_) return t;
-
-        uint8_t raw[7]{};
-        if (I2cReadReg(dev_, 0x04, raw, sizeof(raw)) != ESP_OK) {
+        if (ext_ready_) {
+            uint8_t raw[7]{};
+            if (I2cReadReg(dev_, 0x04, raw, sizeof(raw)) != ESP_OK) {
+                return t;
+            }
+            t.second = BcdToDec(raw[0] & 0x7F);
+            t.minute = BcdToDec(raw[1] & 0x7F);
+            t.hour = BcdToDec(raw[2] & 0x3F);
+            t.day = BcdToDec(raw[3] & 0x3F);
+            t.month = BcdToDec(raw[5] & 0x1F);
+            t.year = 2000 + BcdToDec(raw[6]);
+            t.valid = true;
             return t;
         }
 
-        t.second = BcdToDec(raw[0] & 0x7F);
-        t.minute = BcdToDec(raw[1] & 0x7F);
-        t.hour = BcdToDec(raw[2] & 0x3F);
-        t.day = BcdToDec(raw[3] & 0x3F);
-        t.month = BcdToDec(raw[5] & 0x1F);
-        t.year = 2000 + BcdToDec(raw[6]);
+        time_t now = 0;
+        struct tm tm_info{};
+        time(&now);
+        gmtime_r(&now, &tm_info);
+        t.year = tm_info.tm_year + 1900;
+        t.month = tm_info.tm_mon + 1;
+        t.day = tm_info.tm_mday;
+        t.hour = tm_info.tm_hour;
+        t.minute = tm_info.tm_min;
+        t.second = tm_info.tm_sec;
         t.valid = true;
         return t;
     }
 
-    esp_err_t SetTime(const RtcTime& time) override {
-        if (!ready_) return ESP_ERR_INVALID_STATE;
-        const uint8_t buf[8] = {
-            0x04,
-            DecToBcd(static_cast<uint8_t>(time.second % 60)),
-            DecToBcd(static_cast<uint8_t>(time.minute % 60)),
-            DecToBcd(static_cast<uint8_t>(time.hour % 24)),
-            DecToBcd(static_cast<uint8_t>(time.day)),
-            0,
-            DecToBcd(static_cast<uint8_t>(time.month)),
-            DecToBcd(static_cast<uint8_t>(time.year >= 2000 ? time.year - 2000 : 0)),
-        };
-        return i2c_master_transmit(dev_, buf, sizeof(buf), 50);
+    esp_err_t SetTime(const RtcTime& time_val) override {
+        if (ext_ready_) {
+            const uint8_t buf[8] = {
+                0x04,
+                DecToBcd(static_cast<uint8_t>(time_val.second % 60)),
+                DecToBcd(static_cast<uint8_t>(time_val.minute % 60)),
+                DecToBcd(static_cast<uint8_t>(time_val.hour % 24)),
+                DecToBcd(static_cast<uint8_t>(time_val.day)),
+                0,
+                DecToBcd(static_cast<uint8_t>(time_val.month)),
+                DecToBcd(static_cast<uint8_t>(time_val.year >= 2000 ? time_val.year - 2000 : 0)),
+            };
+            return i2c_master_transmit(dev_, buf, sizeof(buf), 50);
+        }
+
+        struct tm tm_info{};
+        tm_info.tm_year = time_val.year - 1900;
+        tm_info.tm_mon = time_val.month - 1;
+        tm_info.tm_mday = time_val.day;
+        tm_info.tm_hour = time_val.hour;
+        tm_info.tm_min = time_val.minute;
+        tm_info.tm_sec = time_val.second;
+        struct timeval tv{};
+        tv.tv_sec = mktime(&tm_info);
+        tv.tv_usec = 0;
+        settimeofday(&tv, nullptr);
+        return ESP_OK;
     }
 
 private:
     i2c_master_bus_handle_t bus_ = nullptr;
     i2c_master_dev_handle_t dev_ = nullptr;
-    bool ready_ = false;
+    bool ext_ready_ = false;
 };
 
 // ---------------------------------------------------------------------------
@@ -487,6 +548,10 @@ public:
         i2c_master_bus_handle_t i2c_bus = bsp_i2c_get_handle();
         ScanI2cBus(i2c_bus);
 
+        // Initialize PMIC first so analog/audio LDO rails (e.g. ALDO1 3.3V) are powered before codec init
+        pmic_ = std::make_unique<Axp2101PowerManager>(i2c_bus);
+        pmic_->Init();
+
 #if CONFIG_AS_ENABLE_LVGL
         display_ = std::make_unique<RoundAmoledDisplay>(event_queue_);
 #else
@@ -502,9 +567,6 @@ public:
         if (audio_->Init() != ESP_OK) {
             ESP_LOGW(kTag, "Continuing bring-up without audio codec");
         }
-
-        pmic_ = std::make_unique<Axp2101PowerManager>(i2c_bus);
-        pmic_->Init();
 
         imu_ = std::make_unique<Qmi8658ImuSensor>(i2c_bus);
         imu_->Init();

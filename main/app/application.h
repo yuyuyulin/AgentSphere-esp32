@@ -22,6 +22,7 @@ private:
     StateMachine sm_;
     bool screen_on_ = true;
     uint32_t tick_count_ = 0;
+    int emotion_reset_ticks_ = 0;
     TouchPoint last_touch_{};
     PowerStatus last_power_{};
     char last_event_text_[48] = "Boot OK";

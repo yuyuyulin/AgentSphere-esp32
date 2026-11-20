@@ -65,6 +65,18 @@ esp_err_t RoundAmoledDisplay::Init() {
     lv_obj_align(pairing_label_, LV_ALIGN_CENTER, 0, 160);
     lv_obj_set_hidden(pairing_label_, true);
 
+    // Visual touch ripple indicator so every tap produces immediate coordinate feedback
+    touch_dot_ = lv_obj_create(scr);
+    lv_obj_set_size(touch_dot_, 36, 36);
+    lv_obj_set_style_radius(touch_dot_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(touch_dot_, lv_color_hex(0x00E5A0), 0);
+    lv_obj_set_style_bg_opa(touch_dot_, LV_OPA_60, 0);
+    lv_obj_set_style_border_width(touch_dot_, 3, 0);
+    lv_obj_set_style_border_color(touch_dot_, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_scrollable(touch_dot_, false);
+    lv_obj_set_clickable(touch_dot_, false);
+    lv_obj_set_hidden(touch_dot_, true);
+
     bsp_display_unlock();
 
     initialized_ = true;
@@ -83,6 +95,13 @@ void RoundAmoledDisplay::OnScreenPressed(lv_event_t* e) {
     if (indev) {
         lv_indev_get_point(indev, &pt);
     }
+
+    // Immediate visual feedback right inside LVGL callback (0ms latency)
+    if (self->touch_dot_) {
+        lv_obj_set_pos(self->touch_dot_, pt.x - 18, pt.y - 18);
+        lv_obj_set_hidden(self->touch_dot_, false);
+    }
+    self->theme_.SetEmotion(Emotion::Happy);
 
     AppEvent ev{};
     ev.type = AppEventType::Touch;
@@ -114,6 +133,9 @@ void RoundAmoledDisplay::SetEmotion(Emotion emotion) {
         return;
     }
     theme_.SetEmotion(emotion);
+    if (emotion == Emotion::Neutral && touch_dot_) {
+        lv_obj_set_hidden(touch_dot_, true);
+    }
     bsp_display_unlock();
 }
 

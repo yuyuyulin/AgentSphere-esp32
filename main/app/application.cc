@@ -55,8 +55,9 @@ esp_err_t Application::Init() {
     esp_ota_mark_app_valid_cancel_rollback();
 
     if (auto* audio = board.GetAudioCodec(); audio && audio->IsReady()) {
-        audio->SetOutputVolume(70);
-        audio->PlayTone(880, 120);
+        audio->SetOutputVolume(95);
+        audio->PlayTone(880, 140);
+        audio->PlayTone(1175, 160);
     }
 
     sm_.TransitionTo(DeviceState::Idle);
@@ -131,6 +132,7 @@ void Application::HandleEvent(const AppEvent& ev) {
                     if (display) {
                         display->SetState(DeviceState::Idle, "Loopback Done");
                         display->SetEmotion(Emotion::Happy);
+                        emotion_reset_ticks_ = 2;
                     }
                 } else if (ev.button_action == ButtonAction::LongPress) {
                     std::snprintf(last_event_text_, sizeof(last_event_text_), "BOOT long -> Provisioning");
@@ -148,6 +150,7 @@ void Application::HandleEvent(const AppEvent& ev) {
                 if (display) {
                     display->SetEmotion(Emotion::Happy);
                 }
+                emotion_reset_ticks_ = 2;
             }
             break;
         }
@@ -158,6 +161,7 @@ void Application::HandleEvent(const AppEvent& ev) {
                 if (display) {
                     display->SetEmotion(Emotion::Dizzy);
                 }
+                emotion_reset_ticks_ = 2;
             } else if (ev.imu_gesture == ImuGesture::FlipFaceDown) {
                 std::snprintf(last_event_text_, sizeof(last_event_text_), "IMU: FaceDown -> Mute");
                 ESP_LOGI(kTag, "%s", last_event_text_);
@@ -202,6 +206,15 @@ void Application::HandleEvent(const AppEvent& ev) {
 void Application::HandleTick1Hz() {
     ++tick_count_;
     Board& board = Board::GetInstance();
+
+    if (emotion_reset_ticks_ > 0) {
+        --emotion_reset_ticks_;
+        if (emotion_reset_ticks_ == 0) {
+            if (auto* display = board.GetDisplay()) {
+                display->SetEmotion(Emotion::Neutral);
+            }
+        }
+    }
 
     PowerStatus power{};
     if (auto* pm = board.GetPowerManager()) {

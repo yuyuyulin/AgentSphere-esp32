@@ -38,6 +38,7 @@ private:
     lv_obj_t* sensor_label_ = nullptr;
     lv_obj_t* event_label_ = nullptr;
     lv_obj_t* pairing_label_ = nullptr;
+    lv_obj_t* touch_dot_ = nullptr;
     uint8_t brightness_percent_ = 80;
     bool initialized_ = false;
 };

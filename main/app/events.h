@@ -64,6 +64,11 @@ enum class AppEventType : uint8_t {
     PowerChanged,
     Tick1Hz,
     AudioTestTrigger,
+    WifiConnected,
+    WifiDisconnected,
+    WifiConnectTimeout,
+    ProvisioningSkipped,
+    ProvisioningConnectRequested,
 };
 
 struct AppEvent {
@@ -73,6 +78,8 @@ struct AppEvent {
     ImuGesture imu_gesture = ImuGesture::None;
     TouchPoint touch{};
     PowerStatus power{};
+    char ssid[33]{};
+    char ip[16]{};
 };
 
 }  // namespace agentsphere

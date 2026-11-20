@@ -2,6 +2,9 @@ set(APP_SRCS
     "main.cc"
     "app/application.cc"
     "app/state_machine.cc"
+    "storage/settings_store.cc"
+    "net/wifi_manager.cc"
+    "net/provisioning.cc"
     "ui/audio_only_display.cc"
 )
 

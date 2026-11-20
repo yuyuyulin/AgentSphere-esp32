@@ -3,6 +3,7 @@
 #if CONFIG_AS_ENABLE_LVGL
 
 #include <cstdio>
+#include <cstring>
 
 #include "bsp/esp-bsp.h"
 #include "esp_log.h"
@@ -40,29 +41,34 @@ esp_err_t RoundAmoledDisplay::Init() {
     theme_.Create(scr);
 
     status_label_ = lv_label_create(scr);
-    lv_label_set_text(status_label_, "AgentSphere ESP32");
+    lv_label_set_text(status_label_, "XiaoAn | AgentSphere");
     lv_obj_set_style_text_color(status_label_, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(status_label_, LV_ALIGN_CENTER, 0, 34);
+    lv_obj_align(status_label_, LV_ALIGN_CENTER, 0, 26);
+
+    wifi_label_ = lv_label_create(scr);
+    lv_label_set_text(wifi_label_, "Wi-Fi: starting...");
+    lv_obj_set_style_text_color(wifi_label_, lv_color_hex(0x80D8FF), 0);
+    lv_obj_align(wifi_label_, LV_ALIGN_CENTER, 0, 54);
 
     power_label_ = lv_label_create(scr);
     lv_label_set_text(power_label_, "Power: probing...");
     lv_obj_set_style_text_color(power_label_, lv_color_hex(0x80CBC4), 0);
-    lv_obj_align(power_label_, LV_ALIGN_CENTER, 0, 66);
+    lv_obj_align(power_label_, LV_ALIGN_CENTER, 0, 82);
 
     sensor_label_ = lv_label_create(scr);
     lv_label_set_text(sensor_label_, "IMU / RTC: probing...");
     lv_obj_set_style_text_color(sensor_label_, lv_color_hex(0xB0BEC5), 0);
-    lv_obj_align(sensor_label_, LV_ALIGN_CENTER, 0, 96);
+    lv_obj_align(sensor_label_, LV_ALIGN_CENTER, 0, 110);
 
     event_label_ = lv_label_create(scr);
     lv_label_set_text(event_label_, "Tap screen or press BOOT");
     lv_obj_set_style_text_color(event_label_, lv_color_hex(0xFFE082), 0);
-    lv_obj_align(event_label_, LV_ALIGN_CENTER, 0, 128);
+    lv_obj_align(event_label_, LV_ALIGN_CENTER, 0, 138);
 
     pairing_label_ = lv_label_create(scr);
     lv_label_set_text(pairing_label_, "");
     lv_obj_set_style_text_color(pairing_label_, lv_color_hex(0x80D8FF), 0);
-    lv_obj_align(pairing_label_, LV_ALIGN_CENTER, 0, 160);
+    lv_obj_align(pairing_label_, LV_ALIGN_CENTER, 0, 166);
     lv_obj_set_hidden(pairing_label_, true);
 
     // Visual touch ripple indicator so every tap produces immediate coordinate feedback
@@ -76,6 +82,55 @@ esp_err_t RoundAmoledDisplay::Init() {
     lv_obj_set_scrollable(touch_dot_, false);
     lv_obj_set_clickable(touch_dot_, false);
     lv_obj_set_hidden(touch_dot_, true);
+
+    // Full-screen SoftAP Wi-Fi provisioning overlay (hidden by default)
+    prov_panel_ = lv_obj_create(scr);
+    lv_obj_set_size(prov_panel_, 466, 466);
+    lv_obj_center(prov_panel_);
+    lv_obj_set_style_radius(prov_panel_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(prov_panel_, lv_color_hex(0x0B1016), 0);
+    lv_obj_set_style_bg_opa(prov_panel_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(prov_panel_, 6, 0);
+    lv_obj_set_style_border_color(prov_panel_, lv_color_hex(0xFF8A65), 0);
+    lv_obj_set_scrollable(prov_panel_, false);
+
+    lv_obj_t* prov_title = lv_label_create(prov_panel_);
+    lv_label_set_text(prov_title, "Wi-Fi Setup (2.4GHz)");
+    lv_obj_set_style_text_color(prov_title, lv_color_hex(0xFFAB91), 0);
+    lv_obj_align(prov_title, LV_ALIGN_TOP_MID, 0, 34);
+
+#if LV_USE_QRCODE
+    prov_qr_ = lv_qrcode_create(prov_panel_);
+    lv_qrcode_set_size(prov_qr_, 156);
+    lv_qrcode_set_dark_color(prov_qr_, lv_color_hex(0x000000));
+    lv_qrcode_set_light_color(prov_qr_, lv_color_hex(0xFFFFFF));
+    lv_obj_set_style_border_color(prov_qr_, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_set_style_border_width(prov_qr_, 8, 0);
+    lv_obj_align(prov_qr_, LV_ALIGN_CENTER, 0, -44);
+#endif
+
+    prov_ssid_label_ = lv_label_create(prov_panel_);
+    lv_label_set_text(prov_ssid_label_, "AP: AgentSphere-XXXX");
+    lv_obj_set_style_text_color(prov_ssid_label_, lv_color_hex(0xFFFFFF), 0);
+    lv_obj_align(prov_ssid_label_, LV_ALIGN_CENTER, 0, 74);
+
+    prov_url_label_ = lv_label_create(prov_panel_);
+    lv_label_set_text(prov_url_label_, "http://192.168.4.1");
+    lv_obj_set_style_text_color(prov_url_label_, lv_color_hex(0x80D8FF), 0);
+    lv_obj_align(prov_url_label_, LV_ALIGN_CENTER, 0, 102);
+
+    lv_obj_t* skip_btn = lv_button_create(prov_panel_);
+    lv_obj_set_size(skip_btn, 160, 44);
+    lv_obj_align(skip_btn, LV_ALIGN_BOTTOM_MID, 0, -44);
+    lv_obj_set_style_radius(skip_btn, 22, 0);
+    lv_obj_set_style_bg_color(skip_btn, lv_color_hex(0x263238), 0);
+    lv_obj_add_event_cb(skip_btn, &RoundAmoledDisplay::OnSkipProvisioningClicked, LV_EVENT_CLICKED, this);
+
+    lv_obj_t* skip_lbl = lv_label_create(skip_btn);
+    lv_label_set_text(skip_lbl, "Offline Mode");
+    lv_obj_center(skip_lbl);
+
+    lv_obj_set_hidden(prov_panel_, true);
 
     bsp_display_unlock();
 
@@ -154,6 +209,58 @@ void RoundAmoledDisplay::SetPowerStatus(const PowerStatus& power) {
         std::snprintf(buf, sizeof(buf), "PMIC: N/A");
     }
     lv_label_set_text(power_label_, buf);
+    bsp_display_unlock();
+}
+
+void RoundAmoledDisplay::OnSkipProvisioningClicked(lv_event_t* e) {
+    auto* self = static_cast<RoundAmoledDisplay*>(lv_event_get_user_data(e));
+    if (!self || !self->event_queue_) {
+        return;
+    }
+    AppEvent ev{};
+    ev.type = AppEventType::ProvisioningSkipped;
+    xQueueSend(self->event_queue_, &ev, 0);
+}
+
+void RoundAmoledDisplay::SetWifiStatus(bool connected, const char* ssid, const char* ip) {
+    if (!initialized_ || !wifi_label_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) {
+        return;
+    }
+    char buf[72];
+    if (connected) {
+        std::snprintf(buf, sizeof(buf), "Wi-Fi: %s (%s)", ssid ? ssid : "", ip ? ip : "");
+        lv_obj_set_style_text_color(wifi_label_, lv_color_hex(0x69F0AE), 0);
+    } else {
+        std::snprintf(buf, sizeof(buf), "Offline (Hold BOOT to setup)");
+        lv_obj_set_style_text_color(wifi_label_, lv_color_hex(0xFFAB91), 0);
+    }
+    lv_label_set_text(wifi_label_, buf);
+    bsp_display_unlock();
+}
+
+void RoundAmoledDisplay::ShowProvisioning(const char* ap_ssid, const char* ip_addr) {
+    if (!initialized_ || !prov_panel_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) {
+        return;
+    }
+    if (ap_ssid && ap_ssid[0] != '\0') {
+        char buf[64];
+        std::snprintf(buf, sizeof(buf), "AP: %s", ap_ssid);
+        lv_label_set_text(prov_ssid_label_, buf);
+
+        std::snprintf(buf, sizeof(buf), "http://%s", ip_addr ? ip_addr : "192.168.4.1");
+        lv_label_set_text(prov_url_label_, buf);
+
+#if LV_USE_QRCODE
+        if (prov_qr_) {
+            char qr_payload[96];
+            std::snprintf(qr_payload, sizeof(qr_payload), "WIFI:S:%s;T:nopass;;", ap_ssid);
+            lv_qrcode_update(prov_qr_, qr_payload, std::strlen(qr_payload));
+        }
+#endif
+        lv_obj_set_hidden(prov_panel_, false);
+    } else {
+        lv_obj_set_hidden(prov_panel_, true);
+    }
     bsp_display_unlock();
 }
 

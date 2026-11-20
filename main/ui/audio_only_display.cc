@@ -31,6 +31,23 @@ void AudioOnlyDisplay::SetPowerStatus(const PowerStatus& power) {
     }
 }
 
+void AudioOnlyDisplay::SetWifiStatus(bool connected, const char* ssid, const char* ip) {
+    if (connected) {
+        ESP_LOGI(kTag, "Wi-Fi Connected: %s (%s)", ssid ? ssid : "", ip ? ip : "");
+    } else {
+        ESP_LOGI(kTag, "Wi-Fi Offline");
+    }
+}
+
+void AudioOnlyDisplay::ShowProvisioning(const char* ap_ssid, const char* ip_addr) {
+    if (ap_ssid && ap_ssid[0] != '\0') {
+        ESP_LOGI(kTag, "Provisioning Active -> Connect Wi-Fi '%s' and open http://%s",
+                 ap_ssid, ip_addr ? ip_addr : "192.168.4.1");
+    } else {
+        ESP_LOGI(kTag, "Provisioning Closed");
+    }
+}
+
 void AudioOnlyDisplay::ShowPairingCode(const char* code) {
     ESP_LOGI(kTag, "Pairing code (headless voice prompt placeholder): %s", code ? code : "(null)");
 }

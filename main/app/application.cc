@@ -16,6 +16,8 @@ namespace agentsphere {
 namespace {
 constexpr const char* kTag = "App";
 constexpr uint32_t kEventQueueLen = 32;
+constexpr int kWifiConnectTimeoutSec = 18;
+constexpr int kOfflineRetryIntervalSec = 30;
 }  // namespace
 
 esp_err_t Application::Init() {
@@ -29,6 +31,8 @@ esp_err_t Application::Init() {
         ESP_LOGE(kTag, "nvs_flash_init failed: %s", esp_err_to_name(err));
         return err;
     }
+
+    ESP_ERROR_CHECK(settings_.Init());
 
     event_queue_ = xQueueCreate(kEventQueueLen, sizeof(AppEvent));
     if (!event_queue_) {
@@ -60,10 +64,19 @@ esp_err_t Application::Init() {
         audio->PlayTone(1175, 160);
     }
 
-    sm_.TransitionTo(DeviceState::Idle);
-    if (auto* display = board.GetDisplay()) {
-        display->SetState(DeviceState::Idle, "Step 0 Bring-up Ready");
-        display->SetEmotion(Emotion::Neutral);
+    ESP_ERROR_CHECK(wifi_.Init(&settings_, event_queue_));
+
+    // Startup Wi-Fi policy:
+    // - First boot (no saved Wi-Fi): enter SoftAP provisioning immediately.
+    // - Subsequent boot: scan and connect highest-priority saved Wi-Fi with 18s timeout.
+    if (wifi_.ConnectSavedNetworks() == ESP_ERR_NOT_FOUND) {
+        EnterProvisioning();
+    } else {
+        wifi_connect_timeout_ticks_ = kWifiConnectTimeoutSec;
+        if (auto* display = board.GetDisplay()) {
+            display->SetState(DeviceState::Starting, "Connecting Wi-Fi...");
+            display->SetEmotion(Emotion::Thinking);
+        }
     }
 
     LogMemoryWatermarks();
@@ -87,6 +100,33 @@ void Application::Run() {
     }
 }
 
+void Application::EnterProvisioning() {
+    wifi_connect_timeout_ticks_ = 0;
+    offline_retry_ticks_ = 0;
+    sm_.TransitionTo(DeviceState::WifiConfiguring);
+
+    if (provisioning_.Start(&wifi_, &settings_, event_queue_) == ESP_OK) {
+        std::snprintf(last_event_text_, sizeof(last_event_text_), "AP: %s",
+                      provisioning_.ap_ssid().c_str());
+        if (auto* display = Board::GetInstance().GetDisplay()) {
+            display->ShowProvisioning(provisioning_.ap_ssid().c_str(), "192.168.4.1");
+        }
+    }
+}
+
+void Application::ExitProvisioningToState(DeviceState target_state, const char* status_text) {
+    provisioning_.Stop();
+    if (auto* display = Board::GetInstance().GetDisplay()) {
+        display->ShowProvisioning(nullptr, nullptr);
+    }
+    sm_.TransitionTo(target_state);
+    if (auto* display = Board::GetInstance().GetDisplay()) {
+        display->SetState(target_state, status_text);
+        display->SetEmotion(target_state == DeviceState::Idle ? Emotion::Happy : Emotion::Neutral);
+    }
+    emotion_reset_ticks_ = 2;
+}
+
 void Application::HandleEvent(const AppEvent& ev) {
     Board& board = Board::GetInstance();
     auto* display = board.GetDisplay();
@@ -94,6 +134,61 @@ void Application::HandleEvent(const AppEvent& ev) {
     auto* power = board.GetPowerManager();
 
     switch (ev.type) {
+        case AppEventType::WifiConnected: {
+            wifi_connect_timeout_ticks_ = 0;
+            offline_retry_ticks_ = 0;
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "Wi-Fi: %s", ev.ssid);
+            if (display) {
+                display->SetWifiStatus(true, ev.ssid, ev.ip);
+            }
+            if (provisioning_.is_running()) {
+                ExitProvisioningToState(DeviceState::Idle, "Wi-Fi Connected");
+            } else {
+                sm_.TransitionTo(DeviceState::Idle);
+                if (display) {
+                    display->SetState(DeviceState::Idle, "Online");
+                    display->SetEmotion(Emotion::Happy);
+                }
+                emotion_reset_ticks_ = 2;
+            }
+            if (audio && audio->IsReady()) {
+                audio->PlayTone(1318, 120);
+            }
+            LogMemoryWatermarks();
+            break;
+        }
+        case AppEventType::WifiDisconnected:
+        case AppEventType::WifiConnectTimeout: {
+            wifi_connect_timeout_ticks_ = 0;
+            if (sm_.state() == DeviceState::WifiConfiguring) {
+                std::snprintf(last_event_text_, sizeof(last_event_text_), "Wi-Fi failed, retry in portal");
+                break;
+            }
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "Offline (Hold BOOT to setup)");
+            sm_.TransitionTo(DeviceState::Offline);
+            if (display) {
+                display->SetWifiStatus(false, nullptr, nullptr);
+                display->SetState(DeviceState::Offline, "Hold BOOT to setup");
+                display->SetEmotion(Emotion::Confused);
+            }
+            offline_retry_ticks_ = kOfflineRetryIntervalSec;
+            break;
+        }
+        case AppEventType::ProvisioningConnectRequested: {
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "Connecting: %s", ev.ssid);
+            wifi_connect_timeout_ticks_ = kWifiConnectTimeoutSec;
+            break;
+        }
+        case AppEventType::ProvisioningSkipped: {
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "Skipped -> Offline");
+            if (display) {
+                display->SetWifiStatus(false, nullptr, nullptr);
+            }
+            ExitProvisioningToState(DeviceState::Offline, "Offline Mode");
+            offline_retry_ticks_ = kOfflineRetryIntervalSec;
+            LogMemoryWatermarks();
+            break;
+        }
         case AppEventType::Button: {
             if (ev.button_id == ButtonId::Power) {
                 if (ev.button_action == ButtonAction::ShortPress) {
@@ -119,6 +214,13 @@ void Application::HandleEvent(const AppEvent& ev) {
                             display->SetScreenOn(true);
                         }
                     }
+                    if (sm_.state() == DeviceState::WifiConfiguring) {
+                        // Short press BOOT during provisioning skips to offline mode
+                        AppEvent skip_ev{};
+                        skip_ev.type = AppEventType::ProvisioningSkipped;
+                        HandleEvent(skip_ev);
+                        break;
+                    }
                     std::snprintf(last_event_text_, sizeof(last_event_text_), "BOOT -> Audio Loopback");
                     ESP_LOGI(kTag, "BOOT short press: triggering 2s audio loopback self-test");
                     if (display) {
@@ -130,14 +232,15 @@ void Application::HandleEvent(const AppEvent& ev) {
                         audio->RecordAndLoopback(2000);
                     }
                     if (display) {
-                        display->SetState(DeviceState::Idle, "Loopback Done");
+                        const DeviceState back = wifi_.is_connected() ? DeviceState::Idle : DeviceState::Offline;
+                        display->SetState(back, "Loopback Done");
                         display->SetEmotion(Emotion::Happy);
                         emotion_reset_ticks_ = 2;
                     }
                 } else if (ev.button_action == ButtonAction::LongPress) {
-                    std::snprintf(last_event_text_, sizeof(last_event_text_), "BOOT long -> Provisioning");
+                    std::snprintf(last_event_text_, sizeof(last_event_text_), "BOOT long -> Wi-Fi Setup");
                     ESP_LOGI(kTag, "%s", last_event_text_);
-                    sm_.TransitionTo(DeviceState::WifiConfiguring);
+                    EnterProvisioning();
                 }
             }
             break;
@@ -216,6 +319,26 @@ void Application::HandleTick1Hz() {
         }
     }
 
+    if (wifi_connect_timeout_ticks_ > 0) {
+        --wifi_connect_timeout_ticks_;
+        if (wifi_connect_timeout_ticks_ == 0 && !wifi_.is_connected()) {
+            AppEvent ev{};
+            ev.type = AppEventType::WifiConnectTimeout;
+            HandleEvent(ev);
+        }
+    }
+
+    if (sm_.state() == DeviceState::Offline && offline_retry_ticks_ > 0) {
+        --offline_retry_ticks_;
+        if (offline_retry_ticks_ == 0) {
+            if (wifi_.ConnectSavedNetworks() == ESP_OK) {
+                wifi_connect_timeout_ticks_ = kWifiConnectTimeoutSec;
+            } else {
+                offline_retry_ticks_ = kOfflineRetryIntervalSec;
+            }
+        }
+    }
+
     PowerStatus power{};
     if (auto* pm = board.GetPowerManager()) {
         power = pm->ReadStatus();
@@ -246,12 +369,14 @@ void Application::HandleTick1Hz() {
         display->SetDiagnosticTelemetry(imu, rtc, last_touch_, last_event_text_);
     }
 
-    if ((tick_count_ % 5) == 0) {
+    if ((tick_count_ % 10) == 0) {
         ESP_LOGI(kTag,
-                 "Telemetry | pwr(usb=%d chg=%d soc=%d%% %dmV) | imu(%d: %.2f,%.2f,%.2f) | rtc(%d: %04d-%02d-%02d %02d:%02d:%02d)",
+                 "Telemetry | state=%s wifi=%d(%s) | pwr(usb=%d chg=%d soc=%d%% %dmV) | imu(%d: %.2f,%.2f,%.2f)",
+                 DeviceStateToString(sm_.state()),
+                 wifi_.is_connected(),
+                 wifi_.is_connected() ? wifi_.current_ip().c_str() : "offline",
                  power.usb_plugged, power.charging, power.battery_percent, power.battery_mv,
-                 imu.valid, imu.ax, imu.ay, imu.az,
-                 rtc.valid, rtc.year, rtc.month, rtc.day, rtc.hour, rtc.minute, rtc.second);
+                 imu.valid, imu.ax, imu.ay, imu.az);
         LogMemoryWatermarks();
     }
 }

@@ -10,6 +10,8 @@ public:
     void SetState(DeviceState state, const char* status_text = nullptr) override;
     void SetEmotion(Emotion emotion) override;
     void SetPowerStatus(const PowerStatus& power) override;
+    void SetWifiStatus(bool connected, const char* ssid, const char* ip) override;
+    void ShowProvisioning(const char* ap_ssid, const char* ip_addr) override;
     void ShowPairingCode(const char* code) override;
     void SetDiagnosticTelemetry(const ImuData& imu,
                                 const RtcTime& rtc,

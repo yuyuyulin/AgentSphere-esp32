@@ -1,0 +1,34 @@
+menu "AgentSphere Device Configuration"
+
+    choice AS_BOARD_TYPE
+        prompt "Target Hardware Board"
+        default AS_BOARD_WAVESHARE_1_75C
+        help
+            Select the hardware board implementation under main/boards/.
+
+        config AS_BOARD_WAVESHARE_1_75C
+            bool "Waveshare ESP32-S3-Touch-AMOLED-1.75C"
+            help
+                1.75-inch 466x466 round AMOLED touch board with ES7210/ES8311,
+                AXP2101 PMIC, QMI8658 IMU, and PCF85063 RTC.
+
+        config AS_BOARD_GENERIC_HEADLESS
+            bool "Generic Headless ESP32-S3 (No Screen)"
+            help
+                Screenless ESP32-S3 reference target using AudioOnlyDisplay.
+    endchoice
+
+    config AS_ENABLE_LVGL
+        bool "Enable LVGL UI layer"
+        default y if AS_BOARD_WAVESHARE_1_75C
+        default n if AS_BOARD_GENERIC_HEADLESS
+        help
+            Disable LVGL for screenless ESP32 targets to minimize Flash/RAM footprint.
+
+    config AS_BRINGUP_DIAGNOSTICS
+        bool "Run Step 0 hardware bring-up diagnostics on boot"
+        default y
+        help
+            Enables board self-test UI and periodic sensor/button/audio telemetry logs.
+
+endmenu

@@ -110,7 +110,7 @@ AgentSphere-esp32/
     │   ├── audio_only_display.h/.cc # 无屏设备实现（纯语音播报配对码与提示音）
     │   ├── round_amoled/            # 1.75C LVGL 界面实现
     │   │   ├── round_display.h/.cc  # 1 主屏 + 下滑控制中心 + 左滑场景菜单 + 配网/认领视图
-    │   │   └── theme_renderer.h/.cc # 独立角色渲染接口（一期 8 态表情眼，二期插件化玩偶皮肤）
+    │   │   └── theme_renderer.h/.cc # 独立角色渲染接口（小安角色与状态指示，后续支持皮肤包）
     ├── power/
     │   └── power_policy.h/.cc       # 插电桌面态 vs 电池随身态、防烧屏息屏、自动关机与低电保护
     └── storage/
@@ -149,7 +149,7 @@ AgentSphere-esp32/
 
 ### 4.5 1.75C 圆屏 UI 与皮肤解耦
 - **视图层**：主屏（陪伴表情 + 边缘隐私状态环）、下滑快捷控制中心（音量/亮度/一键闭麦/电量/Wi-Fi/设置与二次确认重置）、左滑场景菜单（日常对话 / 英语口语练习），以及独立的全屏状态覆盖层（配网引导、6 位配对码、OTA 进度条）。
-- **皮肤引擎**：`ThemeRenderer` 仅暴露 `SetState(DeviceState)`、`SetEmotion(Emotion)`、`TriggerInteraction(Touch|Shake|Charge)`。一期用 LVGL 矢量绘制实现纯黑底色 8 态高帧率灵动表情眼（极低 Flash 占用且 AMOLED 省电）；二期切换为从 `assets` 分区或 TF 卡加载的完整玩偶序列帧/动画资源包时，主界面与状态机代码零改动。
+- **皮肤引擎**：`ThemeRenderer` 将 `DeviceState` 和 `Emotion` 交给小安角色渲染器，并独立绘制状态指示。全身招手和半身表情使用六张 224 × 188 的 RGB565 位图（约 494 KiB），随圆屏固件内嵌到应用 Flash，LVGL 使用单个图像对象绘制并按需要调度帧切换。终止当前对话、切换状态或息屏会立即更新姿态和动画调度。无屏构建不链接角色素材。后续皮肤包可从 `assets` 分区或 TF 卡加载。 [素材格式与打包](../main/ui/round_amoled/assets/README.md)
 
 ---
 
@@ -184,6 +184,6 @@ AgentSphere-esp32/
 2. **Step 1 · 阶段 A（端云联调闭环）**
    - 实现 `wifi_manager` + SoftAP `192.168.4.1` 配网、`bootstrap`/`pairing-status` 6 位配对码认领、`WSS /device/v1/connect` + Opus 收发与 `delivery.ack`，与 AgentSphere 服务端跑通首次完整语音对话。
 3. **Step 2 · 阶段 B（V1.0 C 端日常可用）**
-   - 接入 `esp-sr`（AEC/VAD/WakeNet）、完整 10 态状态机、8 态灵动表情眼 + 下滑控制中心 + 触摸/IMU 互动、插电/电池功耗策略与自动关机、OTA 双分区升级回滚。
+   - 接入 `esp-sr`（AEC/VAD/WakeNet）、完整 10 态状态机、小安角色表情 + 下滑控制中心 + 触摸/IMU 互动、插电/电池功耗策略与自动关机、OTA 双分区升级回滚。
 4. **Step 3 · 阶段 C（极简英语场景）**
    - 实现左滑场景菜单、`scene.enter`/`scene.exit` 上下文隔离与退出防串台丢包验证。

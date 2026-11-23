@@ -6,22 +6,21 @@
 
 #include "app/state_machine.h"
 #include "lvgl.h"
+#include "ui/round_amoled/xiaoan_avatar.h"
 
 namespace agentsphere {
 
-// Decoupled visual persona renderer: V1 uses lightweight AMOLED-friendly vector eyes.
-// Future versions can swap this renderer to load full avatar asset packs from `assets` partition.
+// Presents the board's status indicator and the local XiaoAn avatar.
 class ThemeRenderer {
 public:
     void Create(lv_obj_t* parent);
     void SetState(DeviceState state);
     void SetEmotion(Emotion emotion);
+    void SetScreenVisible(bool visible);
 
 private:
     lv_obj_t* ring_ = nullptr;
-    lv_obj_t* left_eye_ = nullptr;
-    lv_obj_t* right_eye_ = nullptr;
-    lv_obj_t* mouth_ = nullptr;
+    XiaoAnAvatar avatar_;
 };
 
 }  // namespace agentsphere

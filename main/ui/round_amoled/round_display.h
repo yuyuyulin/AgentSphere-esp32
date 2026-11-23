@@ -4,6 +4,8 @@
 
 #if CONFIG_AS_ENABLE_LVGL
 
+#include <atomic>
+
 #include "freertos/FreeRTOS.h"
 #include "freertos/queue.h"
 #include "lvgl.h"
@@ -37,6 +39,7 @@ private:
 
     QueueHandle_t event_queue_ = nullptr;
     ThemeRenderer theme_;
+    std::atomic_bool requested_screen_on_{true};
     lv_obj_t* status_label_ = nullptr;
     lv_obj_t* wifi_label_ = nullptr;
     lv_obj_t* power_label_ = nullptr;

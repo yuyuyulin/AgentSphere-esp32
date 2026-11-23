@@ -278,6 +278,8 @@ void RoundAmoledDisplay::SetPowerStatus(const PowerStatus& power) {
         std::snprintf(buf, sizeof(buf), "电量: 未知");
     }
     lv_label_set_text(power_label_, buf);
+    // Power telemetry periodically retries a visibility update after a display lock timeout.
+    theme_.SetScreenVisible(requested_screen_on_.load());
     bsp_display_unlock();
 }
 
@@ -437,6 +439,11 @@ void RoundAmoledDisplay::SetBrightness(uint8_t percent) {
 void RoundAmoledDisplay::SetScreenOn(bool on) {
     if (!initialized_) {
         return;
+    }
+    requested_screen_on_.store(on);
+    if (bsp_display_lock(kLockTimeoutMs) == ESP_OK) {
+        theme_.SetScreenVisible(requested_screen_on_.load());
+        bsp_display_unlock();
     }
     if (on) {
         bsp_display_brightness_set(brightness_percent_ > 0 ? brightness_percent_ : 80);

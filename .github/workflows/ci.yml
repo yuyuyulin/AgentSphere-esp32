@@ -39,6 +39,11 @@ jobs:
           print(f"Checked {len(tracked)} tracked files: hygiene OK.")
           PY
 
+      - name: Check XiaoAn pose timing and state precedence
+        run: |
+          c++ -std=c++17 -Wall -Wextra -Werror -I main tests/xiaoan_pose_test.cc -o /tmp/xiaoan-pose-test
+          /tmp/xiaoan-pose-test
+
       - name: Verify local Markdown links
         run: |
           python3 - <<'PY'

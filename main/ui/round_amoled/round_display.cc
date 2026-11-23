@@ -132,6 +132,52 @@ esp_err_t RoundAmoledDisplay::Init() {
 
     lv_obj_set_hidden(prov_panel_, true);
 
+    // Full-screen 6-digit pairing overlay (hidden by default)
+    pair_panel_ = lv_obj_create(scr);
+    lv_obj_set_size(pair_panel_, 466, 466);
+    lv_obj_center(pair_panel_);
+    lv_obj_set_style_radius(pair_panel_, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_bg_color(pair_panel_, lv_color_hex(0x0B0E16), 0);
+    lv_obj_set_style_bg_opa(pair_panel_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(pair_panel_, 6, 0);
+    lv_obj_set_style_border_color(pair_panel_, lv_color_hex(0xBA68C8), 0);
+    lv_obj_set_scrollable(pair_panel_, false);
+
+    lv_obj_t* pair_title = lv_label_create(pair_panel_);
+    lv_label_set_text(pair_title, "XiaoAn Device Pairing");
+    lv_obj_set_style_text_color(pair_title, lv_color_hex(0xCE93D8), 0);
+#if LV_FONT_MONTSERRAT_16
+    lv_obj_set_style_text_font(pair_title, &lv_font_montserrat_16, 0);
+#endif
+    lv_obj_align(pair_title, LV_ALIGN_TOP_MID, 0, 76);
+
+    pair_code_label_ = lv_label_create(pair_panel_);
+    lv_label_set_text(pair_code_label_, "------");
+    lv_obj_set_style_text_color(pair_code_label_, lv_color_hex(0xFFFFFF), 0);
+#if LV_FONT_MONTSERRAT_28
+    lv_obj_set_style_text_font(pair_code_label_, &lv_font_montserrat_28, 0);
+#endif
+    lv_obj_set_style_text_letter_space(pair_code_label_, 6, 0);
+    lv_obj_align(pair_code_label_, LV_ALIGN_CENTER, 0, -18);
+
+    pair_hint_label_ = lv_label_create(pair_panel_);
+    lv_label_set_text(pair_hint_label_, "Enter code in AgentSphere Web");
+    lv_obj_set_style_text_color(pair_hint_label_, lv_color_hex(0xB0BEC5), 0);
+    lv_obj_align(pair_hint_label_, LV_ALIGN_CENTER, 0, 44);
+
+    lv_obj_t* refresh_btn = lv_button_create(pair_panel_);
+    lv_obj_set_size(refresh_btn, 168, 46);
+    lv_obj_align(refresh_btn, LV_ALIGN_BOTTOM_MID, 0, -68);
+    lv_obj_set_style_radius(refresh_btn, 23, 0);
+    lv_obj_set_style_bg_color(refresh_btn, lv_color_hex(0x4A148C), 0);
+    lv_obj_add_event_cb(refresh_btn, &RoundAmoledDisplay::OnRefreshPairingClicked, LV_EVENT_CLICKED, this);
+
+    lv_obj_t* refresh_lbl = lv_label_create(refresh_btn);
+    lv_label_set_text(refresh_lbl, "Refresh Code");
+    lv_obj_center(refresh_lbl);
+
+    lv_obj_set_hidden(pair_panel_, true);
+
     bsp_display_unlock();
 
     initialized_ = true;
@@ -264,17 +310,29 @@ void RoundAmoledDisplay::ShowProvisioning(const char* ap_ssid, const char* ip_ad
     bsp_display_unlock();
 }
 
-void RoundAmoledDisplay::ShowPairingCode(const char* code) {
-    if (!initialized_ || !pairing_label_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) {
+void RoundAmoledDisplay::OnRefreshPairingClicked(lv_event_t* e) {
+    auto* self = static_cast<RoundAmoledDisplay*>(lv_event_get_user_data(e));
+    if (!self || !self->event_queue_) {
+        return;
+    }
+    AppEvent ev{};
+    ev.type = AppEventType::PairingRefreshRequested;
+    xQueueSend(self->event_queue_, &ev, 0);
+}
+
+void RoundAmoledDisplay::ShowPairingCode(const char* code, const char* hint) {
+    if (!initialized_ || !pair_panel_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) {
         return;
     }
     if (code && code[0] != '\0') {
-        char buf[48];
-        std::snprintf(buf, sizeof(buf), "CODE: %s", code);
-        lv_label_set_text(pairing_label_, buf);
-        lv_obj_set_hidden(pairing_label_, false);
+        lv_label_set_text(pair_code_label_, code);
+        if (pair_hint_label_) {
+            lv_label_set_text(pair_hint_label_,
+                              (hint && hint[0] != '\0') ? hint : "Enter code in AgentSphere Web");
+        }
+        lv_obj_set_hidden(pair_panel_, false);
     } else {
-        lv_obj_set_hidden(pairing_label_, true);
+        lv_obj_set_hidden(pair_panel_, true);
     }
     bsp_display_unlock();
 }

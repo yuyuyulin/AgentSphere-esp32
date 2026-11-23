@@ -69,6 +69,10 @@ enum class AppEventType : uint8_t {
     WifiConnectTimeout,
     ProvisioningSkipped,
     ProvisioningConnectRequested,
+    PairingRefreshRequested,
+    BootstrapBound,
+    BootstrapPairingCode,
+    BootstrapError,
 };
 
 struct AppEvent {
@@ -80,6 +84,9 @@ struct AppEvent {
     PowerStatus power{};
     char ssid[33]{};
     char ip[16]{};
+    char text[64]{};
+    char pairing_code[8]{};
+    int value = 0;
 };
 
 }  // namespace agentsphere

@@ -5,6 +5,7 @@ set(APP_SRCS
     "storage/settings_store.cc"
     "net/wifi_manager.cc"
     "net/provisioning.cc"
+    "protocol/bootstrap_client.cc"
     "ui/audio_only_display.cc"
 )
 

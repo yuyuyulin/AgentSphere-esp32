@@ -48,8 +48,13 @@ void AudioOnlyDisplay::ShowProvisioning(const char* ap_ssid, const char* ip_addr
     }
 }
 
-void AudioOnlyDisplay::ShowPairingCode(const char* code) {
-    ESP_LOGI(kTag, "Pairing code (headless voice prompt placeholder): %s", code ? code : "(null)");
+void AudioOnlyDisplay::ShowPairingCode(const char* code, const char* hint) {
+    if (code && code[0] != '\0') {
+        ESP_LOGI(kTag, "Pairing code (headless voice prompt placeholder): %s%s%s",
+                 code, hint ? " | " : "", hint ? hint : "");
+    } else {
+        ESP_LOGI(kTag, "Pairing overlay closed");
+    }
 }
 
 void AudioOnlyDisplay::SetDiagnosticTelemetry(const ImuData& imu,

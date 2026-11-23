@@ -65,6 +65,7 @@ esp_err_t Application::Init() {
     }
 
     ESP_ERROR_CHECK(wifi_.Init(&settings_, event_queue_));
+    bootstrap_.Init(&settings_, &wifi_, event_queue_);
 
     // Startup Wi-Fi policy:
     // - First boot (no saved Wi-Fi): enter SoftAP provisioning immediately.
@@ -101,6 +102,7 @@ void Application::Run() {
 }
 
 void Application::EnterProvisioning() {
+    bootstrap_.Stop();
     wifi_connect_timeout_ticks_ = 0;
     offline_retry_ticks_ = 0;
     sm_.TransitionTo(DeviceState::WifiConfiguring);
@@ -109,6 +111,7 @@ void Application::EnterProvisioning() {
         std::snprintf(last_event_text_, sizeof(last_event_text_), "AP: %s",
                       provisioning_.ap_ssid().c_str());
         if (auto* display = Board::GetInstance().GetDisplay()) {
+            display->ShowPairingCode(nullptr, nullptr);
             display->ShowProvisioning(provisioning_.ap_ssid().c_str(), "192.168.4.1");
         }
     }
@@ -142,19 +145,53 @@ void Application::HandleEvent(const AppEvent& ev) {
                 display->SetWifiStatus(true, ev.ssid, ev.ip);
             }
             if (provisioning_.is_running()) {
-                ExitProvisioningToState(DeviceState::Idle, "Wi-Fi Connected");
+                ExitProvisioningToState(DeviceState::Activating, "Checking Binding...");
             } else {
-                sm_.TransitionTo(DeviceState::Idle);
+                sm_.TransitionTo(DeviceState::Activating);
                 if (display) {
-                    display->SetState(DeviceState::Idle, "Online");
-                    display->SetEmotion(Emotion::Happy);
+                    display->SetState(DeviceState::Activating, "Checking Binding...");
+                    display->SetEmotion(Emotion::Thinking);
                 }
-                emotion_reset_ticks_ = 2;
             }
+            bootstrap_.Start();
+            LogMemoryWatermarks();
+            break;
+        }
+        case AppEventType::BootstrapBound: {
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "%s", ev.text);
+            if (display) {
+                display->ShowPairingCode(nullptr, nullptr);
+            }
+            sm_.TransitionTo(DeviceState::Idle);
+            if (display) {
+                display->SetState(DeviceState::Idle, ev.text);
+                display->SetEmotion(Emotion::Happy);
+            }
+            emotion_reset_ticks_ = 2;
             if (audio && audio->IsReady()) {
                 audio->PlayTone(1318, 120);
             }
-            LogMemoryWatermarks();
+            break;
+        }
+        case AppEventType::BootstrapPairingCode: {
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "Code: %s", ev.pairing_code);
+            sm_.TransitionTo(DeviceState::Activating);
+            if (display) {
+                display->ShowPairingCode(ev.pairing_code, ev.text);
+            }
+            break;
+        }
+        case AppEventType::BootstrapError: {
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "%s", ev.text);
+            if (display) {
+                display->SetState(sm_.state(), ev.text);
+                display->SetEmotion(Emotion::Confused);
+            }
+            break;
+        }
+        case AppEventType::PairingRefreshRequested: {
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "Refreshing pairing...");
+            bootstrap_.RequestRefresh();
             break;
         }
         case AppEventType::WifiDisconnected:
@@ -164,9 +201,11 @@ void Application::HandleEvent(const AppEvent& ev) {
                 std::snprintf(last_event_text_, sizeof(last_event_text_), "Wi-Fi failed, retry in portal");
                 break;
             }
+            bootstrap_.Stop();
             std::snprintf(last_event_text_, sizeof(last_event_text_), "Offline (Hold BOOT to setup)");
             sm_.TransitionTo(DeviceState::Offline);
             if (display) {
+                display->ShowPairingCode(nullptr, nullptr);
                 display->SetWifiStatus(false, nullptr, nullptr);
                 display->SetState(DeviceState::Offline, "Hold BOOT to setup");
                 display->SetEmotion(Emotion::Confused);

@@ -35,8 +35,14 @@ CONFIG_COMPILER_OPTIMIZATION_PERF=y
 # Logging
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
-# LVGL QR code support (for SoftAP Wi-Fi QR on round screen)
+# LVGL QR code & larger fonts for 6-digit pairing code
 CONFIG_LV_USE_QRCODE=y
+CONFIG_LV_FONT_MONTSERRAT_16=y
+CONFIG_LV_FONT_MONTSERRAT_28=y
+
+# TLS root CA bundle for HTTPS control plane & WSS
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE=y
+CONFIG_MBEDTLS_CERTIFICATE_BUNDLE_DEFAULT_FULL=y
 
 # HTTP server buffers for modern mobile Captive Portal headers
 CONFIG_HTTPD_MAX_REQ_HDR_LEN=1024

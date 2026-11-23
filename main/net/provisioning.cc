@@ -50,7 +50,10 @@ constexpr const char kPortalHtml[] = R"HTML(<!doctype html>
   <input id="ssid" placeholder="点击下方列表或手动输入 2.4GHz Wi-Fi">
   <label for="pass">Wi-Fi 密码</label>
   <input id="pass" type="password" placeholder="开放网络可留空">
+  <label for="srv">AgentSphere 服务器地址（可选）</label>
+  <input id="srv" placeholder="https://api.agentsphere.example">
   <button onclick="doConnect()">连接并保存</button>
+  <button class="sec" onclick="saveServerOnly()">仅保存服务器地址</button>
   <div id="msg"></div>
 </div>
 <div class="card">
@@ -68,6 +71,7 @@ constexpr const char kPortalHtml[] = R"HTML(<!doctype html>
 async function loadSaved(){
   const r=await fetch('/api/saved'); const d=await r.json();
   document.getElementById('info').textContent=`${d.ap_ssid} · ${d.board} · v${d.fw_version} · ${d.mac}`;
+  if(d.server_url){document.getElementById('srv').value=d.server_url;}
   const el=document.getElementById('savedList');
   if(!d.saved||!d.saved.length){el.textContent='暂无已保存网络';return;}
   el.innerHTML='';
@@ -97,11 +101,19 @@ async function loadScan(){
 async function doConnect(){
   const ssid=document.getElementById('ssid').value.trim();
   const password=document.getElementById('pass').value;
+  const server_url=document.getElementById('srv').value.trim();
   if(!ssid){document.getElementById('msg').textContent='请输入 Wi-Fi 名称';return;}
   document.getElementById('msg').textContent='正在发送配置并连接，请观察设备屏幕...';
-  const r=await fetch('/api/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,password})});
+  const r=await fetch('/api/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({ssid,password,server_url})});
   const d=await r.json();
   document.getElementById('msg').textContent=d.ok?'已提交！设备正在尝试联网，成功后会自动关闭配网热点。':('提交失败: '+(d.error||'未知错误'));
+}
+async function saveServerOnly(){
+  const server_url=document.getElementById('srv').value.trim();
+  if(!server_url){document.getElementById('msg').textContent='请输入服务器地址';return;}
+  const r=await fetch('/api/connect',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({server_url})});
+  const d=await r.json();
+  document.getElementById('msg').textContent=d.ok?'服务器地址已保存！':('保存失败: '+(d.error||'未知错误'));
 }
 loadSaved(); loadScan();
 </script>
@@ -315,6 +327,7 @@ esp_err_t ProvisioningServer::HandleApiSaved(httpd_req_t* req) {
     cJSON_AddStringToObject(root, "mac", self->wifi_->GetMacString().c_str());
     cJSON_AddStringToObject(root, "board", Board::GetInstance().GetBoardName());
     cJSON_AddStringToObject(root, "fw_version", app ? app->version : "dev");
+    cJSON_AddStringToObject(root, "server_url", self->store_->LoadServerBaseUrl().c_str());
     cJSON_AddBoolToObject(root, "connected", self->wifi_->is_connected());
 
     cJSON* arr = cJSON_CreateArray();
@@ -343,10 +356,18 @@ esp_err_t ProvisioningServer::HandleApiConnect(httpd_req_t* req) {
 
     const cJSON* j_ssid = cJSON_GetObjectItem(root, "ssid");
     const cJSON* j_pass = cJSON_GetObjectItem(root, "password");
+    const cJSON* j_srv = cJSON_GetObjectItem(root, "server_url");
+
+    if (cJSON_IsString(j_srv) && j_srv->valuestring[0] != '\0') {
+        self->store_->SaveServerBaseUrl(j_srv->valuestring);
+    }
+
     if (!cJSON_IsString(j_ssid) || j_ssid->valuestring[0] == '\0') {
+        const bool saved_srv = cJSON_IsString(j_srv) && j_srv->valuestring[0] != '\0';
         cJSON_Delete(root);
         httpd_resp_set_type(req, "application/json");
-        return httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"missing_ssid\"}");
+        return httpd_resp_sendstr(req, saved_srv ? "{\"ok\":true}"
+                                                 : "{\"ok\":false,\"error\":\"missing_ssid\"}");
     }
 
     const std::string ssid = j_ssid->valuestring;

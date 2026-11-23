@@ -5,6 +5,7 @@ set(APP_SRCS
     "storage/settings_store.cc"
     "net/wifi_manager.cc"
     "net/provisioning.cc"
+    "protocol/bootstrap_client.cc"
     "ui/audio_only_display.cc"
 )
 
@@ -18,6 +19,7 @@ endif()
 
 if(CONFIG_AS_ENABLE_LVGL)
     list(APPEND APP_SRCS
+        "ui/fonts/font_zh_18.c"
         "ui/round_amoled/round_display.cc"
         "ui/round_amoled/theme_renderer.cc"
     )

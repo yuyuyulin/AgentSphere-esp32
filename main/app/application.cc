@@ -65,6 +65,7 @@ esp_err_t Application::Init() {
     }
 
     ESP_ERROR_CHECK(wifi_.Init(&settings_, event_queue_));
+    bootstrap_.Init(&settings_, &wifi_, event_queue_);
 
     // Startup Wi-Fi policy:
     // - First boot (no saved Wi-Fi): enter SoftAP provisioning immediately.
@@ -74,7 +75,7 @@ esp_err_t Application::Init() {
     } else {
         wifi_connect_timeout_ticks_ = kWifiConnectTimeoutSec;
         if (auto* display = board.GetDisplay()) {
-            display->SetState(DeviceState::Starting, "Connecting Wi-Fi...");
+            display->SetState(DeviceState::Starting, "连接 Wi-Fi 中...");
             display->SetEmotion(Emotion::Thinking);
         }
     }
@@ -101,14 +102,18 @@ void Application::Run() {
 }
 
 void Application::EnterProvisioning() {
+    bootstrap_.Stop();
     wifi_connect_timeout_ticks_ = 0;
     offline_retry_ticks_ = 0;
+    pairing_remaining_sec_ = 0;
+    pairing_code_active_[0] = '\0';
     sm_.TransitionTo(DeviceState::WifiConfiguring);
 
     if (provisioning_.Start(&wifi_, &settings_, event_queue_) == ESP_OK) {
         std::snprintf(last_event_text_, sizeof(last_event_text_), "AP: %s",
                       provisioning_.ap_ssid().c_str());
         if (auto* display = Board::GetInstance().GetDisplay()) {
+            display->ShowPairingCode(nullptr, nullptr);
             display->ShowProvisioning(provisioning_.ap_ssid().c_str(), "192.168.4.1");
         }
     }
@@ -142,49 +147,107 @@ void Application::HandleEvent(const AppEvent& ev) {
                 display->SetWifiStatus(true, ev.ssid, ev.ip);
             }
             if (provisioning_.is_running()) {
-                ExitProvisioningToState(DeviceState::Idle, "Wi-Fi Connected");
+                ExitProvisioningToState(DeviceState::Activating, "正在检查绑定...");
             } else {
-                sm_.TransitionTo(DeviceState::Idle);
+                sm_.TransitionTo(DeviceState::Activating);
                 if (display) {
-                    display->SetState(DeviceState::Idle, "Online");
-                    display->SetEmotion(Emotion::Happy);
+                    display->SetState(DeviceState::Activating, "正在检查绑定...");
+                    display->SetEmotion(Emotion::Thinking);
                 }
-                emotion_reset_ticks_ = 2;
             }
+            bootstrap_.Start();
+            LogMemoryWatermarks();
+            break;
+        }
+        case AppEventType::BootstrapBound: {
+            pairing_remaining_sec_ = 0;
+            pairing_code_active_[0] = '\0';
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "%s", ev.text);
+            if (display) {
+                display->ShowPairingCode(nullptr, nullptr);
+            }
+            sm_.TransitionTo(DeviceState::Idle);
+            if (display) {
+                display->SetState(DeviceState::Idle, ev.text);
+                display->SetEmotion(Emotion::Happy);
+            }
+            emotion_reset_ticks_ = 2;
             if (audio && audio->IsReady()) {
                 audio->PlayTone(1318, 120);
             }
-            LogMemoryWatermarks();
+            break;
+        }
+        case AppEventType::BootstrapPairingCode: {
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "配对码: %s", ev.pairing_code);
+            std::snprintf(pairing_code_active_, sizeof(pairing_code_active_), "%s", ev.pairing_code);
+            if (ev.value > 0) {
+                pairing_remaining_sec_ = ev.value;
+            } else {
+                pairing_remaining_sec_ = 0;
+            }
+            sm_.TransitionTo(DeviceState::Activating);
+            if (display) {
+                char hint[64];
+                if (pairing_remaining_sec_ > 0) {
+                    std::snprintf(hint, sizeof(hint), "请在网页端输入（剩余 %d 秒）", pairing_remaining_sec_);
+                    display->ShowPairingCode(ev.pairing_code, hint);
+                } else {
+                    display->ShowPairingCode(ev.pairing_code, ev.text);
+                }
+            }
+            break;
+        }
+        case AppEventType::BootstrapError: {
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "%s", ev.text);
+            if (display) {
+                display->SetState(sm_.state(), ev.text);
+                display->SetEmotion(Emotion::Confused);
+            }
+            break;
+        }
+        case AppEventType::PairingRefreshRequested: {
+            pairing_remaining_sec_ = 0;
+            pairing_code_active_[0] = '\0';
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "正在刷新配对码...");
+            ESP_LOGI(kTag, "Pairing refresh requested");
+            if (display) {
+                display->ShowPairingCode("......", "正在获取新配对码...");
+            }
+            bootstrap_.RequestRefresh();
             break;
         }
         case AppEventType::WifiDisconnected:
         case AppEventType::WifiConnectTimeout: {
             wifi_connect_timeout_ticks_ = 0;
+            pairing_remaining_sec_ = 0;
+            pairing_code_active_[0] = '\0';
             if (sm_.state() == DeviceState::WifiConfiguring) {
-                std::snprintf(last_event_text_, sizeof(last_event_text_), "Wi-Fi failed, retry in portal");
+                std::snprintf(last_event_text_, sizeof(last_event_text_), "Wi-Fi 连接失败，请重试");
                 break;
             }
-            std::snprintf(last_event_text_, sizeof(last_event_text_), "Offline (Hold BOOT to setup)");
+            bootstrap_.Stop();
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "已离线（长按 BOOT 配网）");
             sm_.TransitionTo(DeviceState::Offline);
             if (display) {
+                display->ShowPairingCode(nullptr, nullptr);
                 display->SetWifiStatus(false, nullptr, nullptr);
-                display->SetState(DeviceState::Offline, "Hold BOOT to setup");
+                display->SetState(DeviceState::Offline, "长按 BOOT 配网");
                 display->SetEmotion(Emotion::Confused);
             }
             offline_retry_ticks_ = kOfflineRetryIntervalSec;
             break;
         }
         case AppEventType::ProvisioningConnectRequested: {
-            std::snprintf(last_event_text_, sizeof(last_event_text_), "Connecting: %s", ev.ssid);
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "正在连接: %s", ev.ssid);
             wifi_connect_timeout_ticks_ = kWifiConnectTimeoutSec;
             break;
         }
         case AppEventType::ProvisioningSkipped: {
-            std::snprintf(last_event_text_, sizeof(last_event_text_), "Skipped -> Offline");
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "已切换离线模式");
             if (display) {
                 display->SetWifiStatus(false, nullptr, nullptr);
             }
-            ExitProvisioningToState(DeviceState::Offline, "Offline Mode");
+            ExitProvisioningToState(DeviceState::Offline, "离线模式");
             offline_retry_ticks_ = kOfflineRetryIntervalSec;
             LogMemoryWatermarks();
             break;
@@ -193,15 +256,15 @@ void Application::HandleEvent(const AppEvent& ev) {
             if (ev.button_id == ButtonId::Power) {
                 if (ev.button_action == ButtonAction::ShortPress) {
                     screen_on_ = !screen_on_;
-                    std::snprintf(last_event_text_, sizeof(last_event_text_), "PWR short -> %s",
-                                  screen_on_ ? "Screen ON" : "Screen OFF");
-                    ESP_LOGI(kTag, "%s", last_event_text_);
+                    std::snprintf(last_event_text_, sizeof(last_event_text_), "电源键 -> %s",
+                                  screen_on_ ? "亮屏" : "息屏");
+                    ESP_LOGI(kTag, "PWR short -> %s", screen_on_ ? "Screen ON" : "Screen OFF");
                     if (display) {
                         display->SetScreenOn(screen_on_);
                     }
                 } else if (ev.button_action == ButtonAction::LongPress) {
-                    std::snprintf(last_event_text_, sizeof(last_event_text_), "PWR long -> PowerOff");
-                    ESP_LOGW(kTag, "%s", last_event_text_);
+                    std::snprintf(last_event_text_, sizeof(last_event_text_), "电源键长按 -> 关机");
+                    ESP_LOGW(kTag, "PWR long -> PowerOff");
                     if (power) {
                         power->PowerOff();
                     }
@@ -221,10 +284,17 @@ void Application::HandleEvent(const AppEvent& ev) {
                         HandleEvent(skip_ev);
                         break;
                     }
-                    std::snprintf(last_event_text_, sizeof(last_event_text_), "BOOT -> Audio Loopback");
+                    if (sm_.state() == DeviceState::Activating) {
+                        // Short press BOOT during pairing requests a fresh 6-digit code
+                        AppEvent ref_ev{};
+                        ref_ev.type = AppEventType::PairingRefreshRequested;
+                        HandleEvent(ref_ev);
+                        break;
+                    }
+                    std::snprintf(last_event_text_, sizeof(last_event_text_), "BOOT -> 录音回放测试");
                     ESP_LOGI(kTag, "BOOT short press: triggering 2s audio loopback self-test");
                     if (display) {
-                        display->SetState(DeviceState::Listening, "Rec 2s -> Playback");
+                        display->SetState(DeviceState::Listening, "录音 2 秒并回放");
                         display->SetEmotion(Emotion::Surprised);
                     }
                     if (audio && audio->IsReady()) {
@@ -233,13 +303,13 @@ void Application::HandleEvent(const AppEvent& ev) {
                     }
                     if (display) {
                         const DeviceState back = wifi_.is_connected() ? DeviceState::Idle : DeviceState::Offline;
-                        display->SetState(back, "Loopback Done");
+                        display->SetState(back, "回放完成");
                         display->SetEmotion(Emotion::Happy);
                         emotion_reset_ticks_ = 2;
                     }
                 } else if (ev.button_action == ButtonAction::LongPress) {
-                    std::snprintf(last_event_text_, sizeof(last_event_text_), "BOOT long -> Wi-Fi Setup");
-                    ESP_LOGI(kTag, "%s", last_event_text_);
+                    std::snprintf(last_event_text_, sizeof(last_event_text_), "长按 BOOT -> 进入配网");
+                    ESP_LOGI(kTag, "BOOT long -> Wi-Fi Setup");
                     EnterProvisioning();
                 }
             }
@@ -248,7 +318,7 @@ void Application::HandleEvent(const AppEvent& ev) {
         case AppEventType::Touch: {
             last_touch_ = ev.touch;
             if (ev.touch.pressed) {
-                std::snprintf(last_event_text_, sizeof(last_event_text_), "Touch (%d,%d)",
+                std::snprintf(last_event_text_, sizeof(last_event_text_), "触摸 (%d,%d)",
                               ev.touch.x, ev.touch.y);
                 if (display) {
                     display->SetEmotion(Emotion::Happy);
@@ -259,15 +329,15 @@ void Application::HandleEvent(const AppEvent& ev) {
         }
         case AppEventType::ImuGesture: {
             if (ev.imu_gesture == ImuGesture::Shake) {
-                std::snprintf(last_event_text_, sizeof(last_event_text_), "IMU: Shake");
-                ESP_LOGI(kTag, "%s", last_event_text_);
+                std::snprintf(last_event_text_, sizeof(last_event_text_), "摇一摇");
+                ESP_LOGI(kTag, "IMU: Shake");
                 if (display) {
                     display->SetEmotion(Emotion::Dizzy);
                 }
                 emotion_reset_ticks_ = 2;
             } else if (ev.imu_gesture == ImuGesture::FlipFaceDown) {
-                std::snprintf(last_event_text_, sizeof(last_event_text_), "IMU: FaceDown -> Mute");
-                ESP_LOGI(kTag, "%s", last_event_text_);
+                std::snprintf(last_event_text_, sizeof(last_event_text_), "翻转静音息屏");
+                ESP_LOGI(kTag, "IMU: FaceDown -> Mute");
                 if (audio && audio->IsReady()) {
                     audio->StopOutput();
                 }
@@ -278,8 +348,8 @@ void Application::HandleEvent(const AppEvent& ev) {
             } else if (ev.imu_gesture == ImuGesture::PickUp || ev.imu_gesture == ImuGesture::FaceUp) {
                 if (!screen_on_) {
                     screen_on_ = true;
-                    std::snprintf(last_event_text_, sizeof(last_event_text_), "IMU: Wake Screen");
-                    ESP_LOGI(kTag, "%s", last_event_text_);
+                    std::snprintf(last_event_text_, sizeof(last_event_text_), "抬起唤醒屏幕");
+                    ESP_LOGI(kTag, "IMU: Wake Screen");
                     if (display) {
                         display->SetScreenOn(true);
                     }
@@ -315,6 +385,19 @@ void Application::HandleTick1Hz() {
         if (emotion_reset_ticks_ == 0) {
             if (auto* display = board.GetDisplay()) {
                 display->SetEmotion(Emotion::Neutral);
+            }
+        }
+    }
+
+    if (sm_.state() == DeviceState::Activating && pairing_remaining_sec_ > 0 && pairing_code_active_[0] != '\0') {
+        --pairing_remaining_sec_;
+        if (auto* display = board.GetDisplay()) {
+            char hint[64];
+            if (pairing_remaining_sec_ > 0) {
+                std::snprintf(hint, sizeof(hint), "请在网页端输入（剩余 %d 秒）", pairing_remaining_sec_);
+                display->ShowPairingCode(pairing_code_active_, hint);
+            } else {
+                display->ShowPairingCode("已过期", "配对码已过期，请点击刷新");
             }
         }
     }

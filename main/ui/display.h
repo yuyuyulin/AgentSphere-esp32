@@ -18,7 +18,7 @@ public:
     virtual void SetPowerStatus(const PowerStatus& power) = 0;
     virtual void SetWifiStatus(bool connected, const char* ssid, const char* ip) = 0;
     virtual void ShowProvisioning(const char* ap_ssid, const char* ip_addr) = 0;
-    virtual void ShowPairingCode(const char* code) = 0;
+    virtual void ShowPairingCode(const char* code, const char* hint = nullptr) = 0;
     virtual void SetDiagnosticTelemetry(const ImuData& imu,
                                         const RtcTime& rtc,
                                         const TouchPoint& touch,

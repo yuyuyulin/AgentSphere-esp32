@@ -22,7 +22,7 @@ public:
     void SetPowerStatus(const PowerStatus& power) override;
     void SetWifiStatus(bool connected, const char* ssid, const char* ip) override;
     void ShowProvisioning(const char* ap_ssid, const char* ip_addr) override;
-    void ShowPairingCode(const char* code) override;
+    void ShowPairingCode(const char* code, const char* hint = nullptr) override;
     void SetDiagnosticTelemetry(const ImuData& imu,
                                 const RtcTime& rtc,
                                 const TouchPoint& touch,
@@ -33,6 +33,7 @@ public:
 private:
     static void OnScreenPressed(lv_event_t* e);
     static void OnSkipProvisioningClicked(lv_event_t* e);
+    static void OnRefreshPairingClicked(lv_event_t* e);
 
     QueueHandle_t event_queue_ = nullptr;
     ThemeRenderer theme_;
@@ -47,8 +48,12 @@ private:
     lv_obj_t* prov_qr_ = nullptr;
     lv_obj_t* prov_ssid_label_ = nullptr;
     lv_obj_t* prov_url_label_ = nullptr;
+    lv_obj_t* pair_panel_ = nullptr;
+    lv_obj_t* pair_code_label_ = nullptr;
+    lv_obj_t* pair_hint_label_ = nullptr;
     uint8_t brightness_percent_ = 80;
     bool initialized_ = false;
+    bool overlay_active_ = false;
 };
 
 }  // namespace agentsphere

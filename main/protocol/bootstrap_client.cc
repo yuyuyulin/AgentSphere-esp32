@@ -250,7 +250,7 @@ BootstrapClient::HttpOutcome BootstrapClient::CallBootstrap(
     esp_http_client_set_post_field(client, body_str, static_cast<int>(std::strlen(body_str)));
 
     const esp_err_t err = esp_http_client_perform(client);
-    const int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : -1;
+    const int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
     cJSON_free(body_str);
 
@@ -258,8 +258,9 @@ BootstrapClient::HttpOutcome BootstrapClient::CallBootstrap(
         *out_retry_after = resp_buf.retry_after_sec;
     }
 
-    if (err != ESP_OK) {
-        ESP_LOGW(kTag, "POST %s failed: %s", url.c_str(), esp_err_to_name(err));
+    // Note: esp_http_client returns ESP_ERR_NOT_SUPPORTED on HTTP 401 when auth_type is NONE.
+    if (err != ESP_OK && status != 401) {
+        ESP_LOGW(kTag, "POST %s failed: %s (http=%d)", url.c_str(), esp_err_to_name(err), status);
         return HttpOutcome::NetworkError;
     }
 
@@ -392,15 +393,15 @@ BootstrapClient::HttpOutcome BootstrapClient::CallPairingStatus(
     esp_http_client_set_header(client, "X-Claim-Secret", claim_secret.c_str());
 
     const esp_err_t err = esp_http_client_perform(client);
-    const int status = (err == ESP_OK) ? esp_http_client_get_status_code(client) : -1;
+    const int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
 
     if (out_retry_after) {
         *out_retry_after = resp_buf.retry_after_sec;
     }
 
-    if (err != ESP_OK) {
-        ESP_LOGW(kTag, "GET %s failed: %s", url.c_str(), esp_err_to_name(err));
+    if (err != ESP_OK && status != 401) {
+        ESP_LOGW(kTag, "GET %s failed: %s (http=%d)", url.c_str(), esp_err_to_name(err), status);
         return HttpOutcome::NetworkError;
     }
 
@@ -484,9 +485,9 @@ void BootstrapClient::RunLoop() {
 
         const std::string server_url = store_->LoadServerBaseUrl();
         if (server_url.find("agentsphere.example") != std::string::npos) {
-            ESP_LOGW(kTag, "Server URL is still placeholder (%s); configure via 192.168.4.1 portal",
+            ESP_LOGW(kTag, "Server URL is still placeholder (%s); set CONFIG_AS_SERVER_BASE_URL",
                      server_url.c_str());
-            EmitErrorEvent("Set Server URL in 192.168.4.1");
+            EmitErrorEvent("未配置服务器地址");
             sleep_interruptible(15);
             continue;
         }
@@ -499,7 +500,7 @@ void BootstrapClient::RunLoop() {
             const HttpOutcome res = CallBootstrap(server_url, token, "", nullptr, nullptr,
                                                   nullptr, nullptr, &retry_after, &is_bound);
             if (res == HttpOutcome::Ok && is_bound) {
-                const char* detail = ws_url_.empty() ? "Bound (Voice TBD)" : "Bound & Ready";
+                const char* detail = ws_url_.empty() ? "已绑定（待接入语音）" : "已绑定并就绪";
                 ESP_LOGI(kTag, "Device bound: uid=%s ws_url=%s",
                          device_uid_.c_str(), ws_url_.empty() ? "(null)" : ws_url_.c_str());
                 EmitBoundEvent(detail);
@@ -519,7 +520,7 @@ void BootstrapClient::RunLoop() {
                 sleep_interruptible(retry_after > 0 ? retry_after : 10);
                 continue;
             } else {
-                EmitErrorEvent("Server unreachable, retrying...");
+                EmitErrorEvent("服务器连接失败，重试中...");
                 sleep_interruptible(10);
                 continue;
             }
@@ -552,11 +553,12 @@ void BootstrapClient::RunLoop() {
                 pairing_id.clear();
                 claim_secret.clear();
             } else if (st == HttpOutcome::Ok && !claimed) {
-                // Still pending, though we don't have pairing_code cached after reboot;
-                // Wait or request new bootstrap only after expiry, or inform user
-                ESP_LOGI(kTag, "Saved pairing still pending (%ds left)", expires_in);
-                EmitPairingEvent("------", "Pending claim (wait/refresh)", expires_in);
-                need_new_bootstrap = false;
+                // Not claimed yet (and 6-digit code is no longer in RAM after reboot or refresh):
+                // clear old pending proof and immediately request a fresh visible 6-digit code.
+                ESP_LOGI(kTag, "Saved pairing still unclaimed (%ds left); requesting fresh code", expires_in);
+                store_->ClearPairingProof();
+                pairing_id.clear();
+                claim_secret.clear();
             }
         }
 
@@ -570,7 +572,7 @@ void BootstrapClient::RunLoop() {
                                                   &expires_in, &poll_sec, &retry_after, &is_bound);
             if (res == HttpOutcome::AlreadyBound) {
                 ESP_LOGW(kTag, "Hardware is still bound to an account (DEVICE_ALREADY_BOUND)");
-                EmitPairingEvent("BOUND", "Unbind on Web, then Refresh", 0);
+                EmitPairingEvent("已绑定", "请先在网页端解绑后刷新", 0);
                 while (running_ && !refresh_requested_) {
                     vTaskDelay(pdMS_TO_TICKS(250));
                 }
@@ -578,14 +580,14 @@ void BootstrapClient::RunLoop() {
             }
             if (res == HttpOutcome::PairingInProgress || res == HttpOutcome::RateLimited) {
                 const int wait_s = retry_after > 0 ? retry_after : 10;
-                char msg[48];
-                std::snprintf(msg, sizeof(msg), "Busy, retry in %ds", wait_s);
+                char msg[64];
+                std::snprintf(msg, sizeof(msg), "服务繁忙，%d 秒后重试", wait_s);
                 EmitErrorEvent(msg);
                 sleep_interruptible(wait_s);
                 continue;
             }
             if (res != HttpOutcome::Ok || is_bound) {
-                EmitErrorEvent("Bootstrap failed, retrying...");
+                EmitErrorEvent("配对请求失败，重试中...");
                 sleep_interruptible(8);
                 continue;
             }
@@ -594,7 +596,7 @@ void BootstrapClient::RunLoop() {
             store_->SavePairingProof(pairing_id, claim_secret);
             ESP_LOGI(kTag, "Pairing code issued: %s (expires_in=%ds, poll=%ds)",
                      pairing_code.c_str(), expires_in, poll_sec);
-            EmitPairingEvent(pairing_code.c_str(), "Enter code in AgentSphere Web", expires_in);
+            EmitPairingEvent(pairing_code.c_str(), "请在网页端输入配对码", expires_in);
         }
 
         // Step 4: Poll GET /device/v1/pairing-status until claimed, expired, or refreshed
@@ -617,8 +619,8 @@ void BootstrapClient::RunLoop() {
                 break;
             }
             if (st == HttpOutcome::Ok && !claimed) {
-                char hint[48];
-                std::snprintf(hint, sizeof(hint), "AgentSphere Web (%ds left)", expires_in);
+                char hint[64];
+                std::snprintf(hint, sizeof(hint), "请在网页端输入（剩余 %d 秒）", expires_in);
                 EmitPairingEvent(pairing_code.empty() ? "------" : pairing_code.c_str(),
                                  hint, expires_in);
                 continue;
@@ -626,7 +628,7 @@ void BootstrapClient::RunLoop() {
             if (st == HttpOutcome::Expired) {
                 ESP_LOGW(kTag, "Pairing code expired");
                 store_->ClearPairingProof();
-                EmitPairingEvent("EXPIRED", "Tap Refresh for new code", 0);
+                EmitPairingEvent("已过期", "配对码已过期，请点击刷新", 0);
                 while (running_ && !refresh_requested_) {
                     vTaskDelay(pdMS_TO_TICKS(250));
                 }

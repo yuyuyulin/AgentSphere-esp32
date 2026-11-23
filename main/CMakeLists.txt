@@ -19,6 +19,7 @@ endif()
 
 if(CONFIG_AS_ENABLE_LVGL)
     list(APPEND APP_SRCS
+        "ui/fonts/font_zh_18.c"
         "ui/round_amoled/round_display.cc"
         "ui/round_amoled/theme_renderer.cc"
     )

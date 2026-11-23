@@ -84,8 +84,8 @@ struct AppEvent {
     PowerStatus power{};
     char ssid[33]{};
     char ip[16]{};
-    char text[64]{};
-    char pairing_code[8]{};
+    char text[96]{};
+    char pairing_code[16]{};
     int value = 0;
 };
 

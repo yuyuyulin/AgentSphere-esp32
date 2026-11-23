@@ -226,16 +226,11 @@ esp_err_t SettingsStore::ClearPairingProof() {
 }
 
 std::string SettingsStore::LoadServerBaseUrl() const {
-    nvs_handle_t h = 0;
-    if (nvs_open(kNamespace, NVS_READONLY, &h) == ESP_OK) {
-        std::string url;
-        const bool ok = ReadString(h, kKeyServerUrl, &url);
-        nvs_close(h);
-        if (ok && !url.empty()) {
-            return url;
-        }
+    std::string url = CONFIG_AS_SERVER_BASE_URL;
+    while (!url.empty() && url.back() == '/') {
+        url.pop_back();
     }
-    return CONFIG_AS_SERVER_BASE_URL;
+    return url;
 }
 
 esp_err_t SettingsStore::SaveServerBaseUrl(const std::string& url) {

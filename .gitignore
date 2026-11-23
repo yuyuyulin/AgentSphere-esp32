@@ -4,6 +4,7 @@ managed_components/
 dependencies.lock
 sdkconfig
 sdkconfig.old
+sdkconfig.local
 sdkconfig.ci*
 *.bin
 *.elf

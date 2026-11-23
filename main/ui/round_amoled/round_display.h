@@ -53,6 +53,7 @@ private:
     lv_obj_t* pair_hint_label_ = nullptr;
     uint8_t brightness_percent_ = 80;
     bool initialized_ = false;
+    bool overlay_active_ = false;
 };
 
 }  // namespace agentsphere

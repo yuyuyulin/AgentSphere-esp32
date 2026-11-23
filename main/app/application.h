@@ -7,6 +7,7 @@
 #include "freertos/queue.h"
 #include "net/provisioning.h"
 #include "net/wifi_manager.h"
+#include "protocol/bootstrap_client.h"
 #include "storage/settings_store.h"
 
 namespace agentsphere {
@@ -28,15 +29,18 @@ private:
     SettingsStore settings_;
     WifiManager wifi_;
     ProvisioningServer provisioning_;
+    BootstrapClient bootstrap_;
 
     bool screen_on_ = true;
     uint32_t tick_count_ = 0;
     int emotion_reset_ticks_ = 0;
     int wifi_connect_timeout_ticks_ = 0;
     int offline_retry_ticks_ = 0;
+    int pairing_remaining_sec_ = 0;
+    char pairing_code_active_[16]{};
     TouchPoint last_touch_{};
     PowerStatus last_power_{};
-    char last_event_text_[48] = "Boot OK";
+    char last_event_text_[96] = "启动完成";
 };
 
 }  // namespace agentsphere

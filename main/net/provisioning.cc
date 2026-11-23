@@ -315,6 +315,7 @@ esp_err_t ProvisioningServer::HandleApiSaved(httpd_req_t* req) {
     cJSON_AddStringToObject(root, "mac", self->wifi_->GetMacString().c_str());
     cJSON_AddStringToObject(root, "board", Board::GetInstance().GetBoardName());
     cJSON_AddStringToObject(root, "fw_version", app ? app->version : "dev");
+    cJSON_AddStringToObject(root, "server_url", self->store_->LoadServerBaseUrl().c_str());
     cJSON_AddBoolToObject(root, "connected", self->wifi_->is_connected());
 
     cJSON* arr = cJSON_CreateArray();

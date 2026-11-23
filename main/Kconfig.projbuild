@@ -31,4 +31,11 @@ menu "AgentSphere Device Configuration"
         help
             Enables board self-test UI and periodic sensor/button/audio telemetry logs.
 
+    config AS_SERVER_BASE_URL
+        string "Default AgentSphere Server Base URL"
+        default "https://api.agentsphere.example"
+        help
+            Default HTTPS base URL for AgentSphere device control plane (/device/v1/bootstrap).
+            Can be overridden at runtime via the local 192.168.4.1 provisioning portal (saved in NVS).
+
 endmenu

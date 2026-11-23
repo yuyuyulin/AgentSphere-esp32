@@ -25,15 +25,14 @@ lv_color_t StateRingColor(DeviceState state) {
 }  // namespace
 
 void ThemeRenderer::Create(lv_obj_t* parent) {
-    // Circular edge halo ring aligned to 466x466 round AMOLED perimeter
+    // Compact top status indicator pill (avoids 466x466 full-screen circular mask overdraw on QSPI AMOLED)
     ring_ = lv_obj_create(parent);
-    lv_obj_set_size(ring_, 458, 458);
-    lv_obj_center(ring_);
+    lv_obj_set_size(ring_, 96, 10);
+    lv_obj_align(ring_, LV_ALIGN_TOP_MID, 0, 42);
     lv_obj_set_style_radius(ring_, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_opa(ring_, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(ring_, 6, 0);
-    lv_obj_set_style_border_color(ring_, StateRingColor(DeviceState::Starting), 0);
-    lv_obj_set_style_border_opa(ring_, LV_OPA_80, 0);
+    lv_obj_set_style_bg_color(ring_, StateRingColor(DeviceState::Starting), 0);
+    lv_obj_set_style_bg_opa(ring_, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(ring_, 0, 0);
     lv_obj_set_scrollable(ring_, false);
     lv_obj_set_clickable(ring_, false);
 
@@ -45,8 +44,9 @@ void ThemeRenderer::SetState(DeviceState state) {
     if (!ring_) {
         return;
     }
-    lv_obj_set_style_border_color(ring_, StateRingColor(state), 0);
-    lv_obj_set_style_border_width(ring_, state == DeviceState::Listening ? 10 : 6, 0);
+    lv_obj_set_style_bg_color(ring_, StateRingColor(state), 0);
+    lv_obj_set_size(ring_, state == DeviceState::Listening ? 140 : 96,
+                    state == DeviceState::Listening ? 14 : 10);
 }
 
 void ThemeRenderer::SetEmotion(Emotion emotion) {

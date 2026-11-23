@@ -5,6 +5,7 @@
 
 #include "esp_log.h"
 #include "nvs.h"
+#include "sdkconfig.h"
 
 namespace agentsphere {
 
@@ -14,6 +15,9 @@ constexpr const char* kNamespace = "as_cfg";
 constexpr const char* kKeyWifiCount = "wifi_cnt";
 constexpr const char* kKeyDevUid = "dev_uid";
 constexpr const char* kKeyDevToken = "dev_tok";
+constexpr const char* kKeyPairId = "pair_id";
+constexpr const char* kKeyPairSecret = "pair_sec";
+constexpr const char* kKeyServerUrl = "srv_url";
 
 bool ReadString(nvs_handle_t h, const char* key, std::string* out) {
     size_t len = 0;
@@ -177,6 +181,73 @@ esp_err_t SettingsStore::ClearDeviceCredentials() {
     nvs_erase_key(h, kKeyDevToken);
     err = nvs_commit(h);
     nvs_close(h);
+    return err;
+}
+
+bool SettingsStore::LoadPairingProof(std::string* out_pairing_id,
+                                     std::string* out_claim_secret) const {
+    if (!out_pairing_id || !out_claim_secret) return false;
+    nvs_handle_t h = 0;
+    if (nvs_open(kNamespace, NVS_READONLY, &h) != ESP_OK) {
+        return false;
+    }
+    std::string pid, sec;
+    const bool ok = ReadString(h, kKeyPairId, &pid) && ReadString(h, kKeyPairSecret, &sec) &&
+                    !pid.empty() && sec.size() == 64;
+    nvs_close(h);
+    if (ok) {
+        *out_pairing_id = std::move(pid);
+        *out_claim_secret = std::move(sec);
+    }
+    return ok;
+}
+
+esp_err_t SettingsStore::SavePairingProof(const std::string& pairing_id,
+                                          const std::string& claim_secret) {
+    nvs_handle_t h = 0;
+    esp_err_t err = nvs_open(kNamespace, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(h, kKeyPairId, pairing_id.c_str());
+    if (err == ESP_OK) err = nvs_set_str(h, kKeyPairSecret, claim_secret.c_str());
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+esp_err_t SettingsStore::ClearPairingProof() {
+    nvs_handle_t h = 0;
+    esp_err_t err = nvs_open(kNamespace, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    nvs_erase_key(h, kKeyPairId);
+    nvs_erase_key(h, kKeyPairSecret);
+    err = nvs_commit(h);
+    nvs_close(h);
+    return err;
+}
+
+std::string SettingsStore::LoadServerBaseUrl() const {
+    std::string url = CONFIG_AS_SERVER_BASE_URL;
+    while (!url.empty() && url.back() == '/') {
+        url.pop_back();
+    }
+    return url;
+}
+
+esp_err_t SettingsStore::SaveServerBaseUrl(const std::string& url) {
+    if (url.empty() || url.size() > 160) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    std::string trimmed = url;
+    while (!trimmed.empty() && trimmed.back() == '/') {
+        trimmed.pop_back();
+    }
+    nvs_handle_t h = 0;
+    esp_err_t err = nvs_open(kNamespace, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_str(h, kKeyServerUrl, trimmed.c_str());
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
+    ESP_LOGI(kTag, "Saved AgentSphere server URL: %s", trimmed.c_str());
     return err;
 }
 

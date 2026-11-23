@@ -1,5 +1,8 @@
 #include "sdkconfig.h"
 
+#include <algorithm>
+#include <atomic>
+
 #if CONFIG_AS_BOARD_WAVESHARE_1_75C
 
 #include <cmath>
@@ -129,7 +132,7 @@ public:
 
     esp_err_t PlayTone(int frequency_hz, int duration_ms) override {
         if (!ready_ || duration_ms <= 0 || frequency_hz <= 0) return ESP_ERR_INVALID_STATE;
-        stop_requested_ = false;
+        if (BeginOutput() != ESP_OK) return ESP_FAIL;
 
         constexpr int kChunkSamples = 320;  // 20ms @ 16kHz
         int16_t chunk[kChunkSamples];
@@ -157,7 +160,7 @@ public:
 
     esp_err_t RecordAndLoopback(int duration_ms) override {
         if (!ready_ || duration_ms <= 0) return ESP_ERR_INVALID_STATE;
-        stop_requested_ = false;
+        if (BeginOutput() != ESP_OK) return ESP_FAIL;
 
         const size_t total_samples = static_cast<size_t>((kAudioSampleRateHz * duration_ms) / 1000);
         const size_t total_bytes = total_samples * sizeof(int16_t);
@@ -201,16 +204,55 @@ public:
         return ESP_OK;
     }
 
+    esp_err_t BeginCapture() override {
+        return FlushDma(false);
+    }
+
+    esp_err_t ReadPcm(int16_t* samples, size_t count) override {
+        if (!ready_) return ESP_ERR_INVALID_STATE;
+        return esp_codec_dev_read(mic_dev_, samples, count * sizeof(int16_t));
+    }
+
+    esp_err_t BeginOutput() override {
+        if (!ready_) return ESP_ERR_INVALID_STATE;
+        stop_requested_ = false;
+        return esp_codec_dev_set_out_mute(spk_dev_, false);
+    }
+
+    esp_err_t WritePcm(int16_t* samples, size_t count) override {
+        if (!ready_ || stop_requested_) return ESP_ERR_INVALID_STATE;
+        return esp_codec_dev_write(spk_dev_, samples, count * sizeof(int16_t));
+    }
+
+    esp_err_t DrainOutput() override {
+        return FlushDma(true);
+    }
+
     esp_err_t StopOutput() override {
         stop_requested_ = true;
-        return ESP_OK;
+        return ready_ ? esp_codec_dev_set_out_mute(spk_dev_, true) : ESP_ERR_INVALID_STATE;
     }
 
 private:
+    esp_err_t FlushDma(bool output) {
+        // The BSP uses I2S_CHANNEL_DEFAULT_CONFIG and auto-clears transmitted
+        // buffers. Transfer more than the entire DMA ring in wire samples.
+        const i2s_chan_config_t dma = I2S_CHANNEL_DEFAULT_CONFIG(CONFIG_BSP_I2S_NUM, I2S_ROLE_MASTER);
+        int16_t block[160]{};
+        size_t remaining = (dma.dma_desc_num + 1) * dma.dma_frame_num;
+        while (remaining > 0) {
+            const size_t n = std::min(remaining, sizeof(block) / sizeof(block[0]));
+            const esp_err_t err = output ? WritePcm(block, n) : ReadPcm(block, n);
+            if (err != ESP_OK) return err;
+            remaining -= n;
+        }
+        return ESP_OK;
+    }
+
     esp_codec_dev_handle_t spk_dev_ = nullptr;
     esp_codec_dev_handle_t mic_dev_ = nullptr;
     bool ready_ = false;
-    volatile bool stop_requested_ = false;
+    std::atomic<bool> stop_requested_{false};
 };
 
 // ---------------------------------------------------------------------------

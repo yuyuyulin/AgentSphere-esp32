@@ -6,6 +6,9 @@ set(APP_SRCS
     "net/wifi_manager.cc"
     "net/provisioning.cc"
     "protocol/bootstrap_client.cc"
+    "protocol/voice_client.cc"
+    "protocol/voice_socket.cc"
+    "audio/opus_frames.cc"
     "ui/audio_only_display.cc"
 )
 

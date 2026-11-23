@@ -143,7 +143,7 @@
 
 设备仅播放与本轮 `turn_id`、场景相符的 `tts.start` 之后的包，`tts.stop` 结束网络送达。只有播放器排空才回传 `delivery.ack(played)`。等待或播报时按键取消，先本地停播、清队列、使旧轮次失效，再通知服务端。断线清掉旧任务，连接恢复后开启新轮次。
 
-服务端在 [AgentSphere #53](https://github.com/yuyuyulin/AgentSphere/issues/53) 并行实现 Groq 英语识别与播报。替身服务与固件构建结果、真实 Groq 与微雪 1.75C 真机结果分别记录。
+服务端在 [AgentSphere PR #54](https://github.com/yuyuyulin/AgentSphere/pull/54) 实现 Groq 英语识别与播报。[固件 PR #10](https://github.com/yuyuyulin/AgentSphere-esp32/pull/10) 负责设备端。固件只连接受信任的 `wss://` 地址。测试时先在隔离环境取得自己的六位码和有效设备令牌，短按 `BOOT`，说一句英语，再按一次结束。听到回复后检查按键取消与断线重连。替身验证、固件构建、Groq 实际调用和微雪 1.75C 真机结果分别记录。
 
 ### 3.1 建连与保活
 

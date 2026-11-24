@@ -8,6 +8,7 @@
 #include "net/provisioning.h"
 #include "net/wifi_manager.h"
 #include "protocol/bootstrap_client.h"
+#include "protocol/voice_client.h"
 #include "storage/settings_store.h"
 
 namespace agentsphere {
@@ -20,6 +21,7 @@ public:
 private:
     void HandleEvent(const AppEvent& ev);
     void HandleTick1Hz();
+    void UpdateVoiceDisplay();
     void EnterProvisioning();
     void ExitProvisioningToState(DeviceState target_state, const char* status_text);
     void LogMemoryWatermarks() const;
@@ -30,6 +32,8 @@ private:
     WifiManager wifi_;
     ProvisioningServer provisioning_;
     BootstrapClient bootstrap_;
+    VoiceClient voice_;
+    VoiceState displayed_voice_state_ = VoiceState::Disabled;
 
     bool screen_on_ = true;
     uint32_t tick_count_ = 0;

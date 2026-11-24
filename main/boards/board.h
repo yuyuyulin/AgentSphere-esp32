@@ -31,6 +31,13 @@ public:
     virtual esp_err_t SetOutputVolume(int volume_percent) = 0;
     virtual esp_err_t PlayTone(int frequency_hz, int duration_ms) = 0;
     virtual esp_err_t RecordAndLoopback(int duration_ms) = 0;
+    // Voice PCM is signed 16-bit, 16 kHz mono. BeginCapture discards samples
+    // buffered before the user pressed BOOT. DrainOutput waits for hardware.
+    virtual esp_err_t BeginCapture() = 0;
+    virtual esp_err_t ReadPcm(int16_t* samples, size_t count) = 0;
+    virtual esp_err_t BeginOutput() = 0;
+    virtual esp_err_t WritePcm(int16_t* samples, size_t count) = 0;
+    virtual esp_err_t DrainOutput() = 0;
     virtual esp_err_t StopOutput() = 0;
 };
 

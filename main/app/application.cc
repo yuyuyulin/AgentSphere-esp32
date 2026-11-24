@@ -102,6 +102,8 @@ void Application::Run() {
 }
 
 void Application::EnterProvisioning() {
+    voice_.Stop();
+    displayed_voice_state_ = VoiceState::Disabled;
     bootstrap_.Stop();
     wifi_connect_timeout_ticks_ = 0;
     offline_retry_ticks_ = 0;
@@ -140,6 +142,8 @@ void Application::HandleEvent(const AppEvent& ev) {
 
     switch (ev.type) {
         case AppEventType::WifiConnected: {
+            voice_.Stop();
+            displayed_voice_state_ = VoiceState::Disabled;
             wifi_connect_timeout_ticks_ = 0;
             offline_retry_ticks_ = 0;
             std::snprintf(last_event_text_, sizeof(last_event_text_), "Wi-Fi: %s", ev.ssid);
@@ -175,8 +179,18 @@ void Application::HandleEvent(const AppEvent& ev) {
             if (audio && audio->IsReady()) {
                 audio->PlayTone(1318, 120);
             }
+            if (!bootstrap_.ws_url().empty()) {
+                std::string uid, token;
+                if (settings_.LoadDeviceCredentials(&uid, &token) &&
+                    !voice_.Start(audio, event_queue_, bootstrap_.ws_url(), uid, token)) {
+                    ESP_LOGW(kTag, "Voice client could not start");
+                }
+            }
             break;
         }
+        case AppEventType::VoiceChanged:
+            UpdateVoiceDisplay();
+            break;
         case AppEventType::BootstrapPairingCode: {
             std::snprintf(last_event_text_, sizeof(last_event_text_), "配对码: %s", ev.pairing_code);
             std::snprintf(pairing_code_active_, sizeof(pairing_code_active_), "%s", ev.pairing_code);
@@ -225,6 +239,8 @@ void Application::HandleEvent(const AppEvent& ev) {
                 std::snprintf(last_event_text_, sizeof(last_event_text_), "Wi-Fi 连接失败，请重试");
                 break;
             }
+            voice_.Stop();
+            displayed_voice_state_ = VoiceState::Disabled;
             bootstrap_.Stop();
             std::snprintf(last_event_text_, sizeof(last_event_text_), "已离线（长按 BOOT 配网）");
             sm_.TransitionTo(DeviceState::Offline);
@@ -291,6 +307,20 @@ void Application::HandleEvent(const AppEvent& ev) {
                         HandleEvent(ref_ev);
                         break;
                     }
+                    if (voice_.state() != VoiceState::Disabled) {
+                        if (!voice_.Button() && voice_.state() == VoiceState::Connecting) {
+                            std::snprintf(last_event_text_, sizeof(last_event_text_), "语音连接中，正在重连...");
+                            if (display) {
+                                display->SetState(DeviceState::Idle, "语音重连中...");
+                                display->SetEmotion(Emotion::Thinking);
+                                emotion_reset_ticks_ = 2;
+                            }
+                            if (audio && audio->IsReady()) {
+                                audio->PlayTone(520, 70);
+                            }
+                        }
+                        break;
+                    }
                     std::snprintf(last_event_text_, sizeof(last_event_text_), "BOOT -> 录音回放测试");
                     ESP_LOGI(kTag, "BOOT short press: triggering 2s audio loopback self-test");
                     if (display) {
@@ -338,7 +368,9 @@ void Application::HandleEvent(const AppEvent& ev) {
             } else if (ev.imu_gesture == ImuGesture::FlipFaceDown) {
                 std::snprintf(last_event_text_, sizeof(last_event_text_), "翻转静音息屏");
                 ESP_LOGI(kTag, "IMU: FaceDown -> Mute");
-                if (audio && audio->IsReady()) {
+                if (voice_.state() != VoiceState::Disabled) {
+                    voice_.Cancel(true);
+                } else if (audio && audio->IsReady()) {
                     audio->StopOutput();
                 }
                 screen_on_ = false;
@@ -376,8 +408,63 @@ void Application::HandleEvent(const AppEvent& ev) {
     }
 }
 
+void Application::UpdateVoiceDisplay() {
+    const VoiceState state = voice_.state();
+    const bool error = voice_.TakeError();
+    if (state == displayed_voice_state_ && !error) return;
+    displayed_voice_state_ = state;
+    if (!wifi_.is_connected() || sm_.state() == DeviceState::WifiConfiguring) return;
+
+    switch (state) {
+        case VoiceState::Reauth:
+            voice_.Stop();
+            displayed_voice_state_ = VoiceState::Disabled;
+            sm_.TransitionTo(DeviceState::Activating);
+            // Bootstrap is authoritative for clearing credentials and issuing a fresh pairing code.
+            bootstrap_.Stop();
+            bootstrap_.Start();
+            break;
+        case VoiceState::Connecting:
+            sm_.TransitionTo(DeviceState::Idle);
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "语音连接中...");
+            if (auto* display = Board::GetInstance().GetDisplay()) {
+                display->SetState(DeviceState::Idle, "语音连接中...");
+                if (error) {
+                    display->SetEmotion(Emotion::Confused);
+                    emotion_reset_ticks_ = 2;
+                }
+            }
+            break;
+        case VoiceState::Ready:
+            sm_.TransitionTo(DeviceState::Idle);
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "%s",
+                          error ? "对话失败，请重试" : "语音已就绪");
+            if (auto* display = Board::GetInstance().GetDisplay()) {
+                display->SetState(DeviceState::Idle, error ? "对话失败，请重试" : "语音已就绪");
+                if (error) {
+                    display->SetEmotion(Emotion::Confused);
+                    emotion_reset_ticks_ = 2;
+                }
+            }
+            break;
+        case VoiceState::Listening:
+            sm_.TransitionTo(DeviceState::Listening);
+            break;
+        case VoiceState::Thinking:
+            sm_.TransitionTo(DeviceState::Thinking);
+            break;
+        case VoiceState::Speaking:
+            sm_.TransitionTo(DeviceState::Speaking);
+            break;
+        case VoiceState::Disabled:
+            break;
+    }
+}
+
 void Application::HandleTick1Hz() {
     ++tick_count_;
+    // Resynchronize the UI even if the nonblocking event notification arrived on a full queue.
+    UpdateVoiceDisplay();
     Board& board = Board::GetInstance();
 
     if (emotion_reset_ticks_ > 0) {

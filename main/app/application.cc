@@ -308,7 +308,17 @@ void Application::HandleEvent(const AppEvent& ev) {
                         break;
                     }
                     if (voice_.state() != VoiceState::Disabled) {
-                        voice_.Button();
+                        if (!voice_.Button() && voice_.state() == VoiceState::Connecting) {
+                            std::snprintf(last_event_text_, sizeof(last_event_text_), "语音连接中，正在重连...");
+                            if (display) {
+                                display->SetState(DeviceState::Idle, "语音重连中...");
+                                display->SetEmotion(Emotion::Thinking);
+                                emotion_reset_ticks_ = 2;
+                            }
+                            if (audio && audio->IsReady()) {
+                                audio->PlayTone(520, 70);
+                            }
+                        }
                         break;
                     }
                     std::snprintf(last_event_text_, sizeof(last_event_text_), "BOOT -> 录音回放测试");
@@ -415,10 +425,23 @@ void Application::UpdateVoiceDisplay() {
             bootstrap_.Start();
             break;
         case VoiceState::Connecting:
+            sm_.TransitionTo(DeviceState::Idle);
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "语音连接中...");
+            if (auto* display = Board::GetInstance().GetDisplay()) {
+                display->SetState(DeviceState::Idle, "语音连接中...");
+                if (error) {
+                    display->SetEmotion(Emotion::Confused);
+                    emotion_reset_ticks_ = 2;
+                }
+            }
+            break;
         case VoiceState::Ready:
             sm_.TransitionTo(DeviceState::Idle);
-            if (error) {
-                if (auto* display = Board::GetInstance().GetDisplay()) {
+            std::snprintf(last_event_text_, sizeof(last_event_text_), "%s",
+                          error ? "对话失败，请重试" : "语音已就绪");
+            if (auto* display = Board::GetInstance().GetDisplay()) {
+                display->SetState(DeviceState::Idle, error ? "对话失败，请重试" : "语音已就绪");
+                if (error) {
                     display->SetEmotion(Emotion::Confused);
                     emotion_reset_ticks_ = 2;
                 }

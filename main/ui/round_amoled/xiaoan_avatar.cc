@@ -11,7 +11,7 @@ constexpr uint32_t kFrameWidth = 224;
 constexpr uint32_t kFrameHeight = 188;
 constexpr uint32_t kFrameStride = kFrameWidth * sizeof(uint16_t);
 constexpr uint32_t kFrameBytes = kFrameStride * kFrameHeight;
-constexpr int32_t kPortraitOffsetY = -83;  // Between the top indicator and diagnostic labels.
+constexpr int32_t kPortraitOffsetY = -12;
 
 constexpr lv_image_dsc_t ImageFor(XiaoAnFrame frame) {
     lv_image_dsc_t image{};

@@ -15,11 +15,27 @@
 
 namespace agentsphere {
 namespace {
+constexpr const char* kTag = "VoiceClient";
 using Json = std::unique_ptr<cJSON, decltype(&cJSON_Delete)>;
 constexpr int64_t kSecond = 1000000;
+constexpr int64_t kConnectTimeoutSec = 18;
+constexpr int64_t kHelloTimeoutSec = 10;
 // The 60 ms Opus encoder exceeded 16 KiB on the 1.75C.
 // Keep its stack in PSRAM so Wi-Fi and DMA can use internal RAM.
 constexpr uint32_t kVoiceStackBytes = 40 * 1024;
+
+const char* VoiceStateToString(VoiceState state) {
+    switch (state) {
+        case VoiceState::Disabled: return "Disabled";
+        case VoiceState::Connecting: return "Connecting";
+        case VoiceState::Ready: return "Ready";
+        case VoiceState::Listening: return "Listening";
+        case VoiceState::Thinking: return "Thinking";
+        case VoiceState::Speaking: return "Speaking";
+        case VoiceState::Reauth: return "Reauth";
+    }
+    return "Unknown";
+}
 
 std::string_view Field(const cJSON* obj, const char* key) {
     const char* s = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(obj, key));
@@ -77,7 +93,7 @@ bool VoiceClient::Start(AudioCodec* audio, QueueHandle_t events, const std::stri
     }
     url_ = url;
     headers_ = "Authorization: Bearer " + token + "\r\nX-Device-Uid: " + uid + "\r\nX-Protocol-Version: 1\r\n";
-    stop_ = local_error_ = false;
+    stop_ = local_error_ = reconnect_now_ = false;
     command_ = Command::None;
     SetState(VoiceState::Connecting);
     const BaseType_t started = xTaskCreatePinnedToCoreWithCaps(
@@ -107,23 +123,34 @@ void VoiceClient::Stop() {
 }
 
 void VoiceClient::SetState(VoiceState state) {
-    if (state_.exchange(state) == state) return;
+    const VoiceState prev = state_.exchange(state);
+    if (prev == state) return;
+    ESP_LOGI(kTag, "Voice state: %s -> %s", VoiceStateToString(prev), VoiceStateToString(state));
     AppEvent ev{};
     ev.type = AppEventType::VoiceChanged;
     xQueueSend(events_, &ev, 0);
 }
 
-void VoiceClient::Button() {
+bool VoiceClient::Button() {
     std::lock_guard<std::mutex> lock(output_gate_);
     switch (state_.load()) {
-        case VoiceState::Ready: command_ = Command::Start; break;
-        case VoiceState::Listening: command_ = Command::Finish; break;
+        case VoiceState::Ready:
+            command_ = Command::Start;
+            return true;
+        case VoiceState::Listening:
+            command_ = Command::Finish;
+            return true;
         case VoiceState::Thinking:
         case VoiceState::Speaking:
             command_ = Command::Abort;
             audio_->StopOutput();
-            break;
-        default: break;
+            return true;
+        case VoiceState::Connecting:
+            reconnect_now_ = true;
+            ESP_LOGI(kTag, "BOOT pressed while Connecting -> waking reconnect");
+            return false;
+        default:
+            return false;
     }
 }
 
@@ -156,19 +183,34 @@ void VoiceClient::Run() {
             SetState(VoiceState::Reauth);
             break;
         }
+        if (stop_) break;
         SetState(VoiceState::Connecting);
         if (negotiated_) delay_sec = 2;
+        if (!stop_ && !reconnect_now_.load()) {
+            ESP_LOGW(kTag, "Voice WSS disconnected, retrying in %ds", delay_sec);
+        }
         const int64_t retry = esp_timer_get_time() + delay_sec * kSecond + esp_random() % 500000;
-        while (!stop_ && esp_timer_get_time() < retry) vTaskDelay(pdMS_TO_TICKS(20));
-        delay_sec = std::min(30, delay_sec * 2);
+        while (!stop_ && !reconnect_now_.load() && esp_timer_get_time() < retry) vTaskDelay(pdMS_TO_TICKS(20));
+        if (reconnect_now_.exchange(false)) {
+            delay_sec = 2;
+            ESP_LOGI(kTag, "Voice WSS immediate reconnect triggered");
+        } else {
+            delay_sec = std::min(30, delay_sec * 2);
+        }
     }
 }
 
 bool VoiceClient::Serve() {
-    const int64_t hello_deadline = esp_timer_get_time() + 10 * kSecond;
-    while (!socket_.connected() && !socket_.failed() && !stop_ && esp_timer_get_time() < hello_deadline)
+    const int64_t connect_deadline = esp_timer_get_time() + kConnectTimeoutSec * kSecond;
+    while (!socket_.connected() && !socket_.failed() && !stop_ && esp_timer_get_time() < connect_deadline)
         vTaskDelay(pdMS_TO_TICKS(10));
-    if (!socket_.connected() || stop_ || socket_.failed()) return false;
+    if (!socket_.connected() || stop_ || socket_.failed()) {
+        if (!stop_ && !socket_.failed()) {
+            ESP_LOGW(kTag, "Voice WSS connect timed out after %llds", static_cast<long long>(kConnectTimeoutSec));
+        }
+        return false;
+    }
+    const int64_t hello_deadline = esp_timer_get_time() + kHelloTimeoutSec * kSecond;
     Json hello(cJSON_CreateObject(), cJSON_Delete);
     cJSON_AddStringToObject(hello.get(), "type", "hello");
     cJSON_AddNumberToObject(hello.get(), "protocol_version", 1);
@@ -181,7 +223,10 @@ bool VoiceClient::Serve() {
     cJSON_AddNumberToObject(fmt, "frame_duration_ms", 60);
     if (!SendJson(socket_, hello.get())) return false;
     while (!stop_ && !socket_.failed() && !link_error_ && state_ != VoiceState::Reauth) {
-        if (!negotiated_ && esp_timer_get_time() >= hello_deadline) break;
+        if (!negotiated_ && esp_timer_get_time() >= hello_deadline) {
+            ESP_LOGW(kTag, "Voice WSS hello_ack timed out after %llds", static_cast<long long>(kHelloTimeoutSec));
+            break;
+        }
         Step();
     }
     return negotiated_;
@@ -296,10 +341,13 @@ void VoiceClient::HandleControl(const cJSON* obj) {
         if (type != "hello_ack" || Field(obj, "active_scene_id") != "default" ||
             !IsAudioFormat(cJSON_GetObjectItemCaseSensitive(audio, "uplink")) ||
             !IsAudioFormat(cJSON_GetObjectItemCaseSensitive(audio, "downlink"))) {
+            ESP_LOGW(kTag, "Unexpected hello response (type=%.*s)", static_cast<int>(type.size()), type.data());
             link_error_ = true;
             return;
         }
         negotiated_ = true;
+        reconnect_now_ = false;
+        ESP_LOGI(kTag, "Voice WSS ready (hello_ack)");
         SetState(VoiceState::Ready);
         return;
     }
@@ -310,6 +358,7 @@ void VoiceClient::HandleControl(const cJSON* obj) {
             return;
         }
         if (turn != turn_ || state_ != VoiceState::Thinking || Field(obj, "scene_id") != "default") {
+            ESP_LOGW(kTag, "Discarding stale tts.start (state=%s)", VoiceStateToString(state_.load()));
             SendControl("delivery.ack", std::string(turn), "status", "aborted", std::string(delivery));
             return;
         }
@@ -330,9 +379,18 @@ void VoiceClient::HandleControl(const cJSON* obj) {
         else Abort("timeout");
     } else if ((type == "error" && (turn.empty() || turn == turn_)) ||
                (type == "listen.ack" && turn == turn_ && cJSON_IsFalse(cJSON_GetObjectItemCaseSensitive(obj, "accepted")))) {
+        ESP_LOGW(kTag, "Voice turn rejected/error (type=%.*s, code=%.*s)",
+                 static_cast<int>(type.size()), type.data(),
+                 static_cast<int>(code.size()), code.data());
         local_error_ = true;
         EndTurn();
-        SetState(VoiceState::Ready);
+        if (state_.load() == VoiceState::Ready) {
+            AppEvent ev{};
+            ev.type = AppEventType::VoiceChanged;
+            xQueueSend(events_, &ev, 0);
+        } else {
+            SetState(VoiceState::Ready);
+        }
     }
 }
 
@@ -377,6 +435,7 @@ void VoiceClient::PlayNext() {
         SetState(VoiceState::Ready);
     }
     if (!drained) local_error_ = true;
+    ESP_LOGI(kTag, "Sending delivery.ack (status=%s)", drained ? "played" : "aborted");
     SendControl("delivery.ack", turn, "status", drained ? "played" : "aborted", delivery);
 }
 

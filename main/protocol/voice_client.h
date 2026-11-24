@@ -20,7 +20,7 @@ public:
     bool Start(AudioCodec* audio, QueueHandle_t events, const std::string& url,
                const std::string& uid, const std::string& token);
     void Stop();
-    void Button();
+    bool Button();
     void Cancel(bool flipped = false);
     VoiceState state() const { return state_; }
     bool TakeError() { return local_error_.exchange(false); }
@@ -54,7 +54,7 @@ private:
     bool accepting_audio_ = false, received_stop_ = false;
     unsigned frame_count_ = 0;
     bool link_error_ = false, negotiated_ = false;
-    std::atomic<bool> stop_{false}, local_error_{false};
+    std::atomic<bool> stop_{false}, local_error_{false}, reconnect_now_{false};
     std::atomic<VoiceState> state_{VoiceState::Disabled};
     // Serialize physical mute against the one operation that enables output.
     // Network operations and blocking PCM writes never hold this lock.

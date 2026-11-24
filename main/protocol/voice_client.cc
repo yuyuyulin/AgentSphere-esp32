@@ -11,11 +11,15 @@
 #include "esp_log.h"
 #include "esp_random.h"
 #include "esp_timer.h"
+#include "freertos/idf_additions.h"
 
 namespace agentsphere {
 namespace {
 using Json = std::unique_ptr<cJSON, decltype(&cJSON_Delete)>;
 constexpr int64_t kSecond = 1000000;
+// The 60 ms Opus encoder exceeded 16 KiB on the 1.75C.
+// Keep its stack in PSRAM so Wi-Fi and DMA can use internal RAM.
+constexpr uint32_t kVoiceStackBytes = 40 * 1024;
 
 std::string_view Field(const cJSON* obj, const char* key) {
     const char* s = cJSON_GetStringValue(cJSON_GetObjectItemCaseSensitive(obj, key));
@@ -76,7 +80,9 @@ bool VoiceClient::Start(AudioCodec* audio, QueueHandle_t events, const std::stri
     stop_ = local_error_ = false;
     command_ = Command::None;
     SetState(VoiceState::Connecting);
-    if (xTaskCreatePinnedToCore(TaskEntry, "as_voice", 16 * 1024, this, 6, nullptr, 1) != pdPASS) {
+    const BaseType_t started = xTaskCreatePinnedToCoreWithCaps(
+        TaskEntry, "as_voice", kVoiceStackBytes, this, 6, nullptr, 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    if (started != pdPASS) {
         xSemaphoreGive(done_);
         Stop();
         return false;
@@ -134,7 +140,7 @@ void VoiceClient::TaskEntry(void* arg) {
     auto* self = static_cast<VoiceClient*>(arg);
     self->Run();
     xSemaphoreGive(self->done_);
-    vTaskDelete(nullptr);
+    vTaskDeleteWithCaps(nullptr);
 }
 
 void VoiceClient::Run() {

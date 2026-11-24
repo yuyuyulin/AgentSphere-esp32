@@ -8,28 +8,13 @@
 #include "bsp/esp-bsp.h"
 #include "esp_log.h"
 #include "ui/fonts/fonts.h"
+#include "ui/round_amoled/xiaoan_status.h"
 
 namespace agentsphere {
 
 namespace {
 constexpr const char* kTag = "RoundDisplay";
 constexpr uint32_t kLockTimeoutMs = 100;
-
-const char* DeviceStateToZh(DeviceState state) {
-    switch (state) {
-        case DeviceState::Starting:        return "启动中";
-        case DeviceState::WifiConfiguring: return "配网中";
-        case DeviceState::Activating:      return "配对中";
-        case DeviceState::Upgrading:       return "升级中";
-        case DeviceState::Idle:            return "待机中";
-        case DeviceState::Listening:       return "聆听中";
-        case DeviceState::Thinking:        return "思考中";
-        case DeviceState::Speaking:        return "说话中";
-        case DeviceState::Offline:         return "已离线";
-        case DeviceState::Sleeping:        return "休眠中";
-    }
-    return "未知";
-}
 
 bool IsAsciiOnly(const char* s) {
     if (!s) return true;
@@ -66,48 +51,19 @@ esp_err_t RoundAmoledDisplay::Init() {
 
     theme_.Create(scr);
 
+    // Keep a common baseline below the avatar for prompts and future captions.
     status_label_ = lv_label_create(scr);
-    lv_label_set_text(status_label_, "小安 | 正在启动");
-    lv_obj_set_style_text_color(status_label_, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_align(status_label_, LV_ALIGN_CENTER, 0, 22);
+    lv_obj_set_width(status_label_, 276);
+    lv_obj_set_style_text_align(status_label_, LV_TEXT_ALIGN_CENTER, 0);
+    lv_obj_set_style_text_color(status_label_, lv_color_hex(0xE4EBF5), 0);
+    lv_obj_set_style_text_line_space(status_label_, 4, 0);
+    lv_obj_align(status_label_, LV_ALIGN_TOP_MID, 0, 346);
 
-    wifi_label_ = lv_label_create(scr);
-    lv_label_set_text(wifi_label_, "Wi-Fi: 连接中...");
-    lv_obj_set_style_text_color(wifi_label_, lv_color_hex(0x80D8FF), 0);
-    lv_obj_align(wifi_label_, LV_ALIGN_CENTER, 0, 52);
-
-    power_label_ = lv_label_create(scr);
-    lv_label_set_text(power_label_, "电量: 检测中...");
-    lv_obj_set_style_text_color(power_label_, lv_color_hex(0x80CBC4), 0);
-    lv_obj_align(power_label_, LV_ALIGN_CENTER, 0, 82);
-
-    sensor_label_ = lv_label_create(scr);
-    lv_label_set_text(sensor_label_, "传感器: 检测中...");
-    lv_obj_set_style_text_color(sensor_label_, lv_color_hex(0xB0BEC5), 0);
-    lv_obj_align(sensor_label_, LV_ALIGN_CENTER, 0, 112);
-
-    event_label_ = lv_label_create(scr);
-    lv_label_set_text(event_label_, "轻触屏幕或按 BOOT 键");
-    lv_obj_set_style_text_color(event_label_, lv_color_hex(0xFFE082), 0);
-    lv_obj_align(event_label_, LV_ALIGN_CENTER, 0, 142);
-
-    pairing_label_ = lv_label_create(scr);
-    lv_label_set_text(pairing_label_, "");
-    lv_obj_set_style_text_color(pairing_label_, lv_color_hex(0x80D8FF), 0);
-    lv_obj_align(pairing_label_, LV_ALIGN_CENTER, 0, 166);
-    lv_obj_set_hidden(pairing_label_, true);
-
-    // Visual touch ripple indicator so every tap produces immediate coordinate feedback
-    touch_dot_ = lv_obj_create(scr);
-    lv_obj_set_size(touch_dot_, 36, 36);
-    lv_obj_set_style_radius(touch_dot_, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_bg_color(touch_dot_, lv_color_hex(0x00E5A0), 0);
-    lv_obj_set_style_bg_opa(touch_dot_, LV_OPA_60, 0);
-    lv_obj_set_style_border_width(touch_dot_, 3, 0);
-    lv_obj_set_style_border_color(touch_dot_, lv_color_hex(0xFFFFFF), 0);
-    lv_obj_set_scrollable(touch_dot_, false);
-    lv_obj_set_clickable(touch_dot_, false);
-    lv_obj_set_hidden(touch_dot_, true);
+    low_battery_label_ = lv_label_create(scr);
+    lv_label_set_text_static(low_battery_label_, "电量低，请充电");
+    lv_obj_set_style_text_color(low_battery_label_, lv_color_hex(0xFFD49A), 0);
+    lv_obj_align(low_battery_label_, LV_ALIGN_TOP_MID, 0, 74);
+    UpdatePromptVisibility();
 
     // Full-screen SoftAP Wi-Fi provisioning overlay (square 466x466 avoids circle mask overdraw)
     prov_panel_ = lv_obj_create(scr);
@@ -221,11 +177,6 @@ void RoundAmoledDisplay::OnScreenPressed(lv_event_t* e) {
         lv_indev_get_point(indev, &pt);
     }
 
-    // Immediate visual feedback right inside LVGL callback (0ms latency)
-    if (self->touch_dot_) {
-        lv_obj_set_pos(self->touch_dot_, pt.x - 18, pt.y - 18);
-        lv_obj_set_hidden(self->touch_dot_, false);
-    }
     self->theme_.SetEmotion(Emotion::Happy);
 
     AppEvent ev{};
@@ -236,20 +187,26 @@ void RoundAmoledDisplay::OnScreenPressed(lv_event_t* e) {
     xQueueSend(self->event_queue_, &ev, 0);
 }
 
-void RoundAmoledDisplay::SetState(DeviceState state, const char* status_text) {
+void RoundAmoledDisplay::UpdatePromptVisibility() {
+    const bool show_prompts = !overlay_active_ && state_ != DeviceState::Sleeping;
+    const char* status = XiaoAnStatusText(state_, emotion_);
+    if (show_prompts && status) {
+        lv_label_set_text_static(status_label_, status);
+    }
+    lv_obj_set_hidden(status_label_, !show_prompts || !status);
+    lv_obj_set_hidden(low_battery_label_, !show_prompts || !low_battery_);
+}
+
+void RoundAmoledDisplay::SetState(DeviceState state, const char*) {
     if (!initialized_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) {
         return;
     }
-    theme_.SetState(state);
-    if (status_label_) {
-        char buf[96];
-        if (status_text && status_text[0] != '\0') {
-            std::snprintf(buf, sizeof(buf), "%s | %s", DeviceStateToZh(state), status_text);
-        } else {
-            std::snprintf(buf, sizeof(buf), "%s", DeviceStateToZh(state));
-        }
-        lv_label_set_text(status_label_, buf);
+    if (state_ != state) {
+        state_ = state;
+        emotion_ = Emotion::Neutral;
     }
+    theme_.SetState(state);
+    UpdatePromptVisibility();
     bsp_display_unlock();
 }
 
@@ -257,28 +214,22 @@ void RoundAmoledDisplay::SetEmotion(Emotion emotion) {
     if (!initialized_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) {
         return;
     }
+    emotion_ = emotion;
     theme_.SetEmotion(emotion);
-    if (emotion == Emotion::Neutral && touch_dot_) {
-        lv_obj_set_hidden(touch_dot_, true);
-    }
+    UpdatePromptVisibility();
     bsp_display_unlock();
 }
 
 void RoundAmoledDisplay::SetPowerStatus(const PowerStatus& power) {
-    if (!initialized_ || overlay_active_ || !power_label_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) {
+    if (!initialized_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) {
         return;
     }
-    char buf[96];
-    if (power.available) {
-        std::snprintf(buf, sizeof(buf), "%s %d%% (%dmV)",
-                      power.charging ? "充电中" : (power.usb_plugged ? "USB 供电" : "电池"),
-                      power.battery_percent,
-                      power.battery_mv);
-    } else {
-        std::snprintf(buf, sizeof(buf), "电量: 未知");
+    const bool low_battery = XiaoAnShowLowBattery(power);
+    if (low_battery_ != low_battery) {
+        low_battery_ = low_battery;
+        UpdatePromptVisibility();
     }
-    lv_label_set_text(power_label_, buf);
-    // Power telemetry periodically retries a visibility update after a display lock timeout.
+    // Retry a visibility update if a previous screen toggle could not lock LVGL.
     theme_.SetScreenVisible(requested_screen_on_.load());
     bsp_display_unlock();
 }
@@ -291,22 +242,6 @@ void RoundAmoledDisplay::OnSkipProvisioningClicked(lv_event_t* e) {
     AppEvent ev{};
     ev.type = AppEventType::ProvisioningSkipped;
     xQueueSend(self->event_queue_, &ev, 0);
-}
-
-void RoundAmoledDisplay::SetWifiStatus(bool connected, const char* ssid, const char* ip) {
-    if (!initialized_ || !wifi_label_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) {
-        return;
-    }
-    char buf[96];
-    if (connected) {
-        std::snprintf(buf, sizeof(buf), "Wi-Fi: %s (%s)", ssid ? ssid : "", ip ? ip : "");
-        lv_obj_set_style_text_color(wifi_label_, lv_color_hex(0x69F0AE), 0);
-    } else {
-        std::snprintf(buf, sizeof(buf), "未联网（长按 BOOT 配网）");
-        lv_obj_set_style_text_color(wifi_label_, lv_color_hex(0xFFAB91), 0);
-    }
-    lv_label_set_text(wifi_label_, buf);
-    bsp_display_unlock();
 }
 
 void RoundAmoledDisplay::ShowProvisioning(const char* ap_ssid, const char* ip_addr) {
@@ -334,6 +269,7 @@ void RoundAmoledDisplay::ShowProvisioning(const char* ap_ssid, const char* ip_ad
         lv_obj_set_hidden(prov_panel_, true);
         overlay_active_ = (pair_panel_ && !lv_obj_is_hidden(pair_panel_));
     }
+    UpdatePromptVisibility();
     lv_obj_invalidate(lv_screen_active());
     bsp_display_unlock();
 }
@@ -398,34 +334,7 @@ void RoundAmoledDisplay::ShowPairingCode(const char* code, const char* hint) {
             lv_obj_invalidate(lv_screen_active());
         }
     }
-    bsp_display_unlock();
-}
-
-void RoundAmoledDisplay::SetDiagnosticTelemetry(const ImuData& imu,
-                                                const RtcTime& rtc,
-                                                const TouchPoint& /*touch*/,
-                                                const char* last_event) {
-    if (!initialized_ || overlay_active_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) {
-        return;
-    }
-    if (sensor_label_) {
-        char buf[96];
-        if (imu.valid && rtc.valid) {
-            std::snprintf(buf, sizeof(buf), "姿态(%.1f,%.1f,%.1f) %02d:%02d:%02d",
-                          imu.ax, imu.ay, imu.az, rtc.hour, rtc.minute, rtc.second);
-        } else if (imu.valid) {
-            std::snprintf(buf, sizeof(buf), "姿态: %.2f, %.2f, %.2f g", imu.ax, imu.ay, imu.az);
-        } else if (rtc.valid) {
-            std::snprintf(buf, sizeof(buf), "时间: %04d-%02d-%02d %02d:%02d:%02d",
-                          rtc.year, rtc.month, rtc.day, rtc.hour, rtc.minute, rtc.second);
-        } else {
-            std::snprintf(buf, sizeof(buf), "传感器: 检测中...");
-        }
-        lv_label_set_text(sensor_label_, buf);
-    }
-    if (event_label_ && last_event) {
-        lv_label_set_text(event_label_, last_event);
-    }
+    UpdatePromptVisibility();
     bsp_display_unlock();
 }
 

@@ -1,10 +1,38 @@
 #include <cassert>
+#include <string_view>
 
 #include "ui/round_amoled/xiaoan_pose.h"
+#include "ui/round_amoled/xiaoan_status.h"
 
 using namespace agentsphere;
 
 int main() {
+    using namespace std::string_view_literals;
+    assert(XiaoAnStatusText(DeviceState::Idle, Emotion::Neutral) == nullptr);
+    assert(XiaoAnStatusText(DeviceState::Idle, Emotion::Happy) == nullptr);
+    assert(XiaoAnStatusText(DeviceState::Idle, Emotion::Confused) == "对话失败，请重试"sv);
+    assert(XiaoAnStatusText(DeviceState::Listening, Emotion::Neutral) == "聆听中"sv);
+    assert(XiaoAnStatusText(DeviceState::Thinking, Emotion::Neutral) == "思考中"sv);
+    assert(XiaoAnStatusText(DeviceState::Speaking, Emotion::Neutral) == "说话中"sv);
+    assert(XiaoAnStatusText(DeviceState::Offline, Emotion::Confused) == "网络断开\n长按 BOOT 配网"sv);
+    assert(XiaoAnStatusText(DeviceState::Activating, Emotion::Neutral) == "正在检查绑定"sv);
+    assert(XiaoAnStatusText(DeviceState::Activating, Emotion::Confused) == "配对失败，请重试"sv);
+    assert(XiaoAnStatusText(DeviceState::Sleeping, Emotion::Neutral) == nullptr);
+
+    PowerStatus power{};
+    assert(!XiaoAnShowLowBattery(power));
+    power.available = true;
+    assert(!XiaoAnShowLowBattery(power));
+    power.battery_percent = 16;
+    assert(!XiaoAnShowLowBattery(power));
+    power.battery_percent = 15;
+    assert(XiaoAnShowLowBattery(power));
+    power.usb_plugged = true;
+    assert(!XiaoAnShowLowBattery(power));
+    power.usb_plugged = false;
+    power.charging = true;
+    assert(!XiaoAnShowLowBattery(power));
+
     auto pose = GetXiaoAnPose(DeviceState::Idle, Emotion::Neutral, true, 0);
     assert(pose.frame == XiaoAnFrame::Resting && pose.next_update_ms == 4200);
     pose = GetXiaoAnPose(DeviceState::Offline, Emotion::Neutral, true, 4200);

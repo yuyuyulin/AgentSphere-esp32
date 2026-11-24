@@ -22,13 +22,11 @@ public:
     void SetState(DeviceState state, const char* status_text = nullptr) override;
     void SetEmotion(Emotion emotion) override;
     void SetPowerStatus(const PowerStatus& power) override;
-    void SetWifiStatus(bool connected, const char* ssid, const char* ip) override;
+    void SetWifiStatus(bool, const char*, const char*) override {}
     void ShowProvisioning(const char* ap_ssid, const char* ip_addr) override;
     void ShowPairingCode(const char* code, const char* hint = nullptr) override;
-    void SetDiagnosticTelemetry(const ImuData& imu,
-                                const RtcTime& rtc,
-                                const TouchPoint& touch,
-                                const char* last_event) override;
+    void SetDiagnosticTelemetry(const ImuData&, const RtcTime&,
+                                const TouchPoint&, const char*) override {}
     void SetBrightness(uint8_t percent) override;
     void SetScreenOn(bool on) override;
 
@@ -36,17 +34,15 @@ private:
     static void OnScreenPressed(lv_event_t* e);
     static void OnSkipProvisioningClicked(lv_event_t* e);
     static void OnRefreshPairingClicked(lv_event_t* e);
+    void UpdatePromptVisibility();
 
     QueueHandle_t event_queue_ = nullptr;
     ThemeRenderer theme_;
     std::atomic_bool requested_screen_on_{true};
+    DeviceState state_ = DeviceState::Starting;
+    Emotion emotion_ = Emotion::Neutral;
     lv_obj_t* status_label_ = nullptr;
-    lv_obj_t* wifi_label_ = nullptr;
-    lv_obj_t* power_label_ = nullptr;
-    lv_obj_t* sensor_label_ = nullptr;
-    lv_obj_t* event_label_ = nullptr;
-    lv_obj_t* pairing_label_ = nullptr;
-    lv_obj_t* touch_dot_ = nullptr;
+    lv_obj_t* low_battery_label_ = nullptr;
     lv_obj_t* prov_panel_ = nullptr;
     lv_obj_t* prov_qr_ = nullptr;
     lv_obj_t* prov_ssid_label_ = nullptr;
@@ -57,6 +53,7 @@ private:
     uint8_t brightness_percent_ = 80;
     bool initialized_ = false;
     bool overlay_active_ = false;
+    bool low_battery_ = false;
 };
 
 }  // namespace agentsphere

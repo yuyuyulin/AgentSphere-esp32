@@ -39,10 +39,13 @@ jobs:
           print(f"Checked {len(tracked)} tracked files: hygiene OK.")
           PY
 
-      - name: Check XiaoAn pose timing and state precedence
+      - name: Run firmware host regressions
         run: |
-          c++ -std=c++17 -Wall -Wextra -Werror -I main tests/xiaoan_pose_test.cc -o /tmp/xiaoan-pose-test
-          /tmp/xiaoan-pose-test
+          for test_source in tests/*_test.cc; do
+            test_binary="/tmp/$(basename "${test_source%.cc}")"
+            c++ -std=c++17 -Wall -Wextra -Werror -I main "$test_source" -o "$test_binary"
+            "$test_binary"
+          done
 
       - name: Verify local Markdown links
         run: |

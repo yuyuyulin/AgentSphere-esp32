@@ -5,6 +5,7 @@
 #include <string>
 
 #include "app/events.h"
+#include "audio/microphone_gate.h"
 #include "audio/opus_frames.h"
 #include "boards/board.h"
 #include "cJSON.h"
@@ -21,6 +22,7 @@ public:
                const std::string& uid, const std::string& token);
     void Stop();
     bool Button();
+    void SetMicrophoneMuted(bool muted) { microphone_.SetMuted(muted); }
     void Cancel(bool flipped = false);
     VoiceState state() const { return state_; }
     bool TakeError() { return local_error_.exchange(false); }
@@ -34,7 +36,7 @@ private:
     void Step();
     void HandleControl(const cJSON* message);
     void HandleBinary(uint8_t* bytes, size_t len);
-    void BeginTurn();
+    void BeginTurn(uint32_t mic_epoch);
     void FinishRecording(const char* reason);
     void EndTurn();
     void Abort(const char* reason);
@@ -59,6 +61,9 @@ private:
     // Serialize physical mute against the one operation that enables output.
     // Network operations and blocking PCM writes never hold this lock.
     std::mutex output_gate_;
+    MicrophoneGate microphone_;
+    std::atomic<uint32_t> requested_mic_epoch_{0};
+    uint32_t turn_mic_epoch_ = 0;
     std::atomic<Command> command_{Command::None};
 };
 

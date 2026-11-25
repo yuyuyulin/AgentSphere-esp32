@@ -8,6 +8,7 @@
 #include "bsp/esp-bsp.h"
 #include "esp_log.h"
 #include "ui/fonts/fonts.h"
+#include "ui/round_amoled/quick_panel_gesture.h"
 #include "ui/round_amoled/xiaoan_status.h"
 
 namespace agentsphere {
@@ -47,7 +48,8 @@ esp_err_t RoundAmoledDisplay::Init() {
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_set_style_text_font(scr, &font_zh_18, 0);
     lv_obj_set_scrollable(scr, false);
-    lv_obj_add_event_cb(scr, &RoundAmoledDisplay::OnScreenPressed, LV_EVENT_PRESSED, this);
+    lv_obj_add_event_cb(scr, &RoundAmoledDisplay::OnHomeTouch, LV_EVENT_PRESSED, this);
+    lv_obj_add_event_cb(scr, &RoundAmoledDisplay::OnHomeTouch, LV_EVENT_RELEASED, this);
 
     theme_.Create(scr);
 
@@ -157,6 +159,7 @@ esp_err_t RoundAmoledDisplay::Init() {
     lv_obj_center(refresh_lbl);
 
     lv_obj_set_hidden(pair_panel_, true);
+    CreateQuickPanel(scr);
 
     bsp_display_unlock();
 
@@ -165,30 +168,169 @@ esp_err_t RoundAmoledDisplay::Init() {
     return ESP_OK;
 }
 
-void RoundAmoledDisplay::OnScreenPressed(lv_event_t* e) {
+void RoundAmoledDisplay::CreateQuickPanel(lv_obj_t* parent) {
+    quick_panel_ = lv_obj_create(parent);
+    lv_obj_set_size(quick_panel_, 466, 466);
+    lv_obj_center(quick_panel_);
+    lv_obj_set_style_radius(quick_panel_, 0, 0);
+    lv_obj_set_style_border_width(quick_panel_, 0, 0);
+    lv_obj_set_style_pad_all(quick_panel_, 0, 0);
+    lv_obj_set_style_bg_color(quick_panel_, lv_color_hex(0x121A1D), 0);
+    lv_obj_set_style_bg_opa(quick_panel_, LV_OPA_COVER, 0);
+    lv_obj_set_style_text_color(quick_panel_, lv_color_hex(0xEDF5F3), 0);
+    lv_obj_set_scrollable(quick_panel_, false);
+    lv_obj_set_gesture_bubble(quick_panel_, false);
+    lv_obj_add_event_cb(quick_panel_, &RoundAmoledDisplay::OnQuickPanelGesture, LV_EVENT_GESTURE, this);
+    lv_obj_add_event_cb(quick_panel_, &RoundAmoledDisplay::OnQuickPanelGesture, LV_EVENT_PRESSED, this);
+
+    auto label = [this](const char* text, int x, int y) {
+        auto* obj = lv_label_create(quick_panel_);
+        lv_label_set_text_static(obj, text);
+        lv_obj_align(obj, LV_ALIGN_CENTER, x, y);
+        return obj;
+    };
+    auto status_icon = [&](const char* icon, int x) {
+        lv_obj_set_style_text_font(label(icon, x, -155), LV_FONT_DEFAULT, 0);
+    };
+    status_icon(LV_SYMBOL_WIFI, -106);
+    quick_wifi_ = label("离线", -67, -155);
+    status_icon(LV_SYMBOL_BATTERY_FULL, 38);
+    quick_battery_ = label("--", 87, -155);
+
+    auto make_slider = [this](int min, int y) {
+        auto* slider = lv_slider_create(quick_panel_);
+        lv_slider_set_range(slider, min, 100);
+        lv_obj_set_size(slider, 230, 18);
+        lv_obj_set_ext_click_area(slider, 16);
+        lv_obj_align(slider, LV_ALIGN_CENTER, 0, y);
+        lv_obj_set_press_lock(slider, true);
+        lv_obj_set_gesture_bubble(slider, false);
+        lv_obj_set_style_bg_color(slider, lv_color_hex(0x6AD5AC), LV_PART_INDICATOR);
+        lv_obj_add_event_cb(slider, &RoundAmoledDisplay::OnQuickControl, LV_EVENT_PRESSED, this);
+        lv_obj_add_event_cb(slider, &RoundAmoledDisplay::OnQuickControl, LV_EVENT_RELEASED, this);
+        return slider;
+    };
+    label("音量", 0, -110);
+    quick_volume_ = make_slider(0, -74);
+    label("亮度", 0, -24);
+    quick_brightness_ = make_slider(QuickControls::kMinBrightness, 12);
+    label("闭麦", -52, 83);
+    quick_mic_ = lv_switch_create(quick_panel_);
+    lv_obj_set_size(quick_mic_, 67, 40);
+    lv_obj_set_ext_click_area(quick_mic_, 8);
+    lv_obj_align(quick_mic_, LV_ALIGN_CENTER, 39, 83);
+    lv_obj_set_gesture_bubble(quick_mic_, false);
+    lv_obj_set_style_bg_color(quick_mic_, lv_color_hex(0x6AD5AC), static_cast<lv_style_selector_t>(LV_PART_INDICATOR) | LV_STATE_CHECKED);
+    lv_obj_add_event_cb(quick_mic_, &RoundAmoledDisplay::OnQuickControl, LV_EVENT_VALUE_CHANGED, this);
+
+    auto* back = lv_button_create(quick_panel_);
+    lv_obj_set_size(back, 112, 46);
+    lv_obj_align(back, LV_ALIGN_CENTER, 0, 151);
+    lv_obj_set_style_radius(back, 23, 0);
+    lv_obj_set_style_bg_color(back, lv_color_hex(0x273B3E), 0);
+    auto* back_label = lv_label_create(back);
+    lv_label_set_text_static(back_label, "返回");
+    lv_obj_center(back_label);
+    lv_obj_add_event_cb(back, &RoundAmoledDisplay::OnQuickPanelGesture, LV_EVENT_CLICKED, this);
+
+    lv_obj_set_hidden(quick_panel_, true);
+}
+
+void RoundAmoledDisplay::PostQuickEvent(AppEventType type, int value) {
+    if (!event_queue_) return;
+    AppEvent ev{};
+    ev.type = type;
+    ev.value = value;
+    xQueueSend(event_queue_, &ev, 0);
+}
+
+void RoundAmoledDisplay::OnHomeTouch(lv_event_t* e) {
     auto* self = static_cast<RoundAmoledDisplay*>(lv_event_get_user_data(e));
-    if (!self || !self->event_queue_) {
+    auto* indev = lv_indev_active();
+    if (!indev || !self->requested_screen_on_.load() || self->overlay_active_ || self->quick_visible_) return;
+
+    lv_point_t pt{};
+    lv_indev_get_point(indev, &pt);
+    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+        self->home_press_ = pt;
+        self->PostQuickEvent(AppEventType::DisplayActivity);
         return;
     }
 
-    lv_indev_t* indev = lv_indev_active();
-    lv_point_t pt{0, 0};
-    if (indev) {
-        lv_indev_get_point(indev, &pt);
+    const auto start = self->home_press_;
+    if (OpensQuickPanel(start.x, start.y, pt.x, pt.y)) {
+        self->SetQuickPanelVisible(true);
+        self->PostQuickEvent(AppEventType::DisplayActivity);
+    } else if (std::abs(pt.x - start.x) < 24 && std::abs(pt.y - start.y) < 24) {
+        if (!self->event_queue_) return;
+        self->theme_.SetEmotion(Emotion::Happy);
+        AppEvent ev{};
+        ev.type = AppEventType::Touch;
+        ev.touch = {true, static_cast<int16_t>(pt.x), static_cast<int16_t>(pt.y)};
+        xQueueSend(self->event_queue_, &ev, 0);
     }
+}
 
-    self->theme_.SetEmotion(Emotion::Happy);
+void RoundAmoledDisplay::OnQuickPanelGesture(lv_event_t* e) {
+    auto* self = static_cast<RoundAmoledDisplay*>(lv_event_get_user_data(e));
+    const auto code = lv_event_get_code(e);
+    auto* indev = lv_indev_active();
+    if (code == LV_EVENT_CLICKED ||
+        (code == LV_EVENT_GESTURE && indev && lv_indev_get_gesture_dir(indev) == LV_DIR_TOP)) {
+        self->SetQuickPanelVisible(false);
+    }
+    self->PostQuickEvent(AppEventType::DisplayActivity);
+}
 
-    AppEvent ev{};
-    ev.type = AppEventType::Touch;
-    ev.touch.pressed = true;
-    ev.touch.x = static_cast<int16_t>(pt.x);
-    ev.touch.y = static_cast<int16_t>(pt.y);
-    xQueueSend(self->event_queue_, &ev, 0);
+void RoundAmoledDisplay::OnQuickControl(lv_event_t* e) {
+    auto* self = static_cast<RoundAmoledDisplay*>(lv_event_get_user_data(e));
+    auto* target = static_cast<lv_obj_t*>(lv_event_get_target(e));
+    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+        self->PostQuickEvent(AppEventType::DisplayActivity);
+    } else if (target == self->quick_mic_) {
+        self->PostQuickEvent(AppEventType::MicrophoneMuteChanged, lv_obj_has_state(target, LV_STATE_CHECKED));
+    } else {
+        const auto type = target == self->quick_volume_ ? AppEventType::VolumeChanged : AppEventType::BrightnessChanged;
+        self->PostQuickEvent(type, lv_slider_get_value(target));
+    }
+}
+
+void RoundAmoledDisplay::SetQuickPanelVisible(bool visible) {
+    if (quick_visible_ == visible) return;
+    quick_visible_ = visible;
+    if (visible) UpdateQuickStatus();
+    lv_obj_set_hidden(quick_panel_, !visible);
+    theme_.SetScreenVisible(requested_screen_on_.load() && !visible);
+    UpdatePromptVisibility();
+}
+
+void RoundAmoledDisplay::UpdateQuickStatus() {
+    lv_label_set_text_static(quick_wifi_, wifi_connected_ ? "在线" : "离线");
+    if (power_.battery_percent >= 0) {
+        lv_label_set_text_fmt(quick_battery_, "%d%%", power_.battery_percent);
+    } else {
+        lv_label_set_text_static(quick_battery_, "--");
+    }
+}
+
+void RoundAmoledDisplay::SetQuickControls(const QuickControls& controls) {
+    if (!initialized_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) return;
+    lv_slider_set_value(quick_volume_, controls.volume, LV_ANIM_OFF);
+    lv_slider_set_value(quick_brightness_, controls.brightness, LV_ANIM_OFF);
+    lv_obj_set_state(quick_mic_, LV_STATE_CHECKED, controls.muted);
+    bsp_display_unlock();
+}
+
+void RoundAmoledDisplay::SetWifiStatus(bool connected, const char*, const char*) {
+    if (!initialized_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) return;
+    wifi_connected_ = connected;
+    if (quick_visible_) UpdateQuickStatus();
+    bsp_display_unlock();
 }
 
 void RoundAmoledDisplay::UpdatePromptVisibility() {
-    const bool show_prompts = !overlay_active_ && state_ != DeviceState::Sleeping;
+    const bool show_prompts = requested_screen_on_.load() && !overlay_active_ && !quick_visible_ &&
+                              state_ != DeviceState::Sleeping;
     const char* status = XiaoAnStatusText(state_, emotion_);
     if (show_prompts && status) {
         lv_label_set_text_static(status_label_, status);
@@ -229,8 +371,14 @@ void RoundAmoledDisplay::SetPowerStatus(const PowerStatus& power) {
         low_battery_ = low_battery;
         UpdatePromptVisibility();
     }
+    if (power_.battery_percent != power.battery_percent) {
+        power_ = power;
+        if (quick_visible_) UpdateQuickStatus();
+    }
     // Retry a visibility update if a previous screen toggle could not lock LVGL.
-    theme_.SetScreenVisible(requested_screen_on_.load());
+    if (!requested_screen_on_.load()) SetQuickPanelVisible(false);
+    theme_.SetScreenVisible(requested_screen_on_.load() && !quick_visible_);
+    UpdatePromptVisibility();
     bsp_display_unlock();
 }
 
@@ -249,6 +397,7 @@ void RoundAmoledDisplay::ShowProvisioning(const char* ap_ssid, const char* ip_ad
         return;
     }
     if (ap_ssid && ap_ssid[0] != '\0') {
+        SetQuickPanelVisible(false);
         char buf[96];
         std::snprintf(buf, sizeof(buf), "热点: %s", ap_ssid);
         lv_label_set_text(prov_ssid_label_, buf);
@@ -308,6 +457,7 @@ void RoundAmoledDisplay::ShowPairingCode(const char* code, const char* hint) {
     }
     const bool was_hidden = lv_obj_is_hidden(pair_panel_);
     if (code && code[0] != '\0') {
+        SetQuickPanelVisible(false);
         if (IsAsciiOnly(code)) {
 #if LV_FONT_MONTSERRAT_28
             lv_obj_set_style_text_font(pair_code_label_, &lv_font_montserrat_28, 0);
@@ -340,7 +490,7 @@ void RoundAmoledDisplay::ShowPairingCode(const char* code, const char* hint) {
 
 void RoundAmoledDisplay::SetBrightness(uint8_t percent) {
     brightness_percent_ = percent > 100 ? 100 : percent;
-    if (initialized_) {
+    if (initialized_ && requested_screen_on_.load()) {
         bsp_display_brightness_set(brightness_percent_);
     }
 }
@@ -351,7 +501,9 @@ void RoundAmoledDisplay::SetScreenOn(bool on) {
     }
     requested_screen_on_.store(on);
     if (bsp_display_lock(kLockTimeoutMs) == ESP_OK) {
-        theme_.SetScreenVisible(requested_screen_on_.load());
+        if (!on) SetQuickPanelVisible(false);
+        theme_.SetScreenVisible(on && !quick_visible_);
+        UpdatePromptVisibility();
         bsp_display_unlock();
     }
     if (on) {

@@ -134,9 +134,13 @@ void VoiceClient::SetState(VoiceState state) {
 bool VoiceClient::Button() {
     std::lock_guard<std::mutex> lock(output_gate_);
     switch (state_.load()) {
-        case VoiceState::Ready:
+        case VoiceState::Ready: {
+            const uint32_t mic_epoch = microphone_.epoch();
+            if (!microphone_.Allows(mic_epoch)) return false;
+            requested_mic_epoch_ = mic_epoch;
             command_ = Command::Start;
             return true;
+        }
         case VoiceState::Listening:
             command_ = Command::Finish;
             return true;
@@ -234,7 +238,8 @@ bool VoiceClient::Serve() {
 
 void VoiceClient::Step() {
     const auto cmd = command_.exchange(Command::None);
-    if (cmd == Command::Start && state_ == VoiceState::Ready) BeginTurn();
+    if (cmd == Command::Start && state_ == VoiceState::Ready) BeginTurn(requested_mic_epoch_);
+    if (state_ == VoiceState::Listening && !microphone_.Allows(turn_mic_epoch_)) Abort("button");
     if (cmd == Command::Finish && state_ == VoiceState::Listening) FinishRecording("manual");
     if ((cmd == Command::Abort || cmd == Command::Flip) && !turn_.empty()) Abort(cmd == Command::Flip ? "flip" : "button");
 
@@ -254,6 +259,10 @@ void VoiceClient::Step() {
     if (stop_ || link_error_ || socket_.failed() || state_ == VoiceState::Reauth) return;
 
     if (state_ == VoiceState::Listening) {
+        if (!microphone_.Allows(turn_mic_epoch_)) {
+            Abort("button");
+            return;
+        }
         if (frame_count_ >= 500 || esp_timer_get_time() >= deadline_us_) {
             FinishRecording("max_duration");
             return;
@@ -267,7 +276,7 @@ void VoiceClient::Step() {
         if (!n) {
             local_error_ = true;
             Abort("timeout");
-        } else if (!stop_ && esp_timer_get_time() < deadline_us_) {
+        } else if (!stop_ && microphone_.Allows(turn_mic_epoch_) && esp_timer_get_time() < deadline_us_) {
             socket_.Send(opus_.packet, n, true);
             ++frame_count_;
         }
@@ -277,12 +286,18 @@ void VoiceClient::Step() {
     } else if (state_ == VoiceState::Speaking) PlayNext();
 }
 
-void VoiceClient::BeginTurn() {
+void VoiceClient::BeginTurn(uint32_t mic_epoch) {
+    if (!microphone_.Allows(mic_epoch)) return;
     if (!opus_.OpenEncoder() || audio_->BeginCapture() != ESP_OK) {
         local_error_ = true;
         opus_.Close();
         return;
     }
+    if (!microphone_.Allows(mic_epoch)) {
+        opus_.Close();
+        return;
+    }
+    turn_mic_epoch_ = mic_epoch;
     turn_ = NewTurn();
     frame_count_ = 0;
     deadline_us_ = esp_timer_get_time() + 30 * kSecond;

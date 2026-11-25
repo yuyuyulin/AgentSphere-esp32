@@ -74,6 +74,10 @@ enum class AppEventType : uint8_t {
     BootstrapPairingCode,
     BootstrapError,
     VoiceChanged,
+    DisplayActivity,
+    VolumeChanged,
+    BrightnessChanged,
+    MicrophoneMuteChanged,
 };
 
 struct AppEvent {

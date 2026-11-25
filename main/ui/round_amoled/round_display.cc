@@ -48,8 +48,11 @@ esp_err_t RoundAmoledDisplay::Init() {
     lv_obj_set_style_bg_opa(scr, LV_OPA_COVER, 0);
     lv_obj_set_style_text_font(scr, &font_zh_18, 0);
     lv_obj_set_scrollable(scr, false);
+    lv_obj_set_press_lock(scr, true);
     lv_obj_add_event_cb(scr, &RoundAmoledDisplay::OnHomeTouch, LV_EVENT_PRESSED, this);
+    lv_obj_add_event_cb(scr, &RoundAmoledDisplay::OnHomeTouch, LV_EVENT_PRESSING, this);
     lv_obj_add_event_cb(scr, &RoundAmoledDisplay::OnHomeTouch, LV_EVENT_RELEASED, this);
+    lv_obj_add_event_cb(scr, &RoundAmoledDisplay::OnHomeTouch, LV_EVENT_PRESS_LOST, this);
 
     theme_.Create(scr);
 
@@ -247,28 +250,42 @@ void RoundAmoledDisplay::PostQuickEvent(AppEventType type, int value) {
 void RoundAmoledDisplay::OnHomeTouch(lv_event_t* e) {
     auto* self = static_cast<RoundAmoledDisplay*>(lv_event_get_user_data(e));
     auto* indev = lv_indev_active();
-    if (!indev || !self->requested_screen_on_.load() || self->overlay_active_ || self->quick_visible_) return;
-
-    lv_point_t pt{};
-    lv_indev_get_point(indev, &pt);
-    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
-        self->home_press_ = pt;
-        self->PostQuickEvent(AppEventType::DisplayActivity);
+    const auto code = lv_event_get_code(e);
+    if (!indev || code == LV_EVENT_PRESS_LOST || !self->requested_screen_on_.load() ||
+        self->overlay_active_ || self->quick_visible_) {
+        self->home_press_active_ = false;
         return;
     }
 
+    lv_point_t pt{};
+    lv_indev_get_point(indev, &pt);
+    if (code == LV_EVENT_PRESSED) {
+        self->home_press_ = pt;
+        self->home_press_active_ = true;
+        self->PostQuickEvent(AppEventType::DisplayActivity);
+        return;
+    }
+    if (!self->home_press_active_) return;
+
     const auto start = self->home_press_;
     if (OpensQuickPanel(start.x, start.y, pt.x, pt.y)) {
+        self->home_press_active_ = false;
+        // Keep the rest of this swipe away from the panel's sliders and switch.
+        if (code == LV_EVENT_PRESSING) lv_indev_wait_release(indev);
         self->SetQuickPanelVisible(true);
         self->PostQuickEvent(AppEventType::DisplayActivity);
-    } else if (std::abs(pt.x - start.x) < 24 && std::abs(pt.y - start.y) < 24) {
-        if (!self->event_queue_) return;
-        self->theme_.SetEmotion(Emotion::Happy);
-        AppEvent ev{};
-        ev.type = AppEventType::Touch;
-        ev.touch = {true, static_cast<int16_t>(pt.x), static_cast<int16_t>(pt.y)};
-        xQueueSend(self->event_queue_, &ev, 0);
+        ESP_LOGI(kTag, "Quick controls opened by downward swipe");
+        return;
     }
+
+    if (code != LV_EVENT_RELEASED) return;
+    self->home_press_active_ = false;
+    if (!self->event_queue_ || std::abs(pt.x - start.x) >= 24 || std::abs(pt.y - start.y) >= 24) return;
+    self->theme_.SetEmotion(Emotion::Happy);
+    AppEvent ev{};
+    ev.type = AppEventType::Touch;
+    ev.touch = {true, static_cast<int16_t>(pt.x), static_cast<int16_t>(pt.y)};
+    xQueueSend(self->event_queue_, &ev, 0);
 }
 
 void RoundAmoledDisplay::OnQuickPanelGesture(lv_event_t* e) {

@@ -51,6 +51,7 @@ private:
     lv_obj_t* status_label_ = nullptr;
     lv_obj_t* low_battery_label_ = nullptr;
     lv_point_t home_press_{};
+    bool home_press_active_ = false;
     lv_obj_t* quick_panel_ = nullptr;
     lv_obj_t* quick_wifi_ = nullptr;
     lv_obj_t* quick_battery_ = nullptr;

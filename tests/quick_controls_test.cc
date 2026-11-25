@@ -10,7 +10,9 @@ using agentsphere::QuickControls;
 int main() {
     using agentsphere::OpensQuickPanel;
     assert(OpensQuickPanel(233, 45, 235, 110));
-    assert(!OpensQuickPanel(233, 175, 235, 250));
+    assert(OpensQuickPanel(233, 175, 235, 250));
+    assert(OpensQuickPanel(233, 232, 248, 272));
+    assert(!OpensQuickPanel(233, 232, 248, 209));
     assert(!OpensQuickPanel(180, 50, 260, 110));
     assert(!OpensQuickPanel(233, 45, 235, 55));
 

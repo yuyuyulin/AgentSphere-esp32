@@ -13,12 +13,12 @@ using namespace xiaoan_assets;
 
 constexpr lv_point_t kHeadPosition{34, 3};
 constexpr lv_point_t kHeadPivot{93, 139};
-constexpr lv_point_t kTorsoPosition{66, 129};
-constexpr lv_point_t kLeftArmPosition{50, 136};
-constexpr lv_point_t kRightArmPosition{158, 135};
+constexpr lv_point_t kTorsoPosition{65, 141};
+constexpr lv_point_t kLeftArmPosition{51, 150};
+constexpr lv_point_t kRightArmPosition{154, 149};
 constexpr lv_point_t kRightArmPivot{12, 13};
-constexpr lv_point_t kEyesCenter{130, 100};
-constexpr lv_point_t kMouthCenter{139, 123};
+constexpr lv_point_t kEyesCenter{130, 101};
+constexpr lv_point_t kMouthCenter{132, 123};
 
 constexpr lv_image_dsc_t ImageFor(RigImage part) {
     lv_image_dsc_t image{};
@@ -67,7 +67,7 @@ void PlaceFacePart(lv_obj_t* object, RigImage image, lv_point_t center,
 void XiaoAnAvatar::Create(lv_obj_t* parent) {
     root_ = lv_obj_create(parent);
     lv_obj_remove_style_all(root_);
-    lv_obj_set_size(root_, 260, 210);
+    lv_obj_set_size(root_, 260, 224);
     lv_obj_align(root_, LV_ALIGN_CENTER, 0, -12);
     lv_obj_set_clickable(root_, false);
     lv_obj_set_scrollable(root_, false);

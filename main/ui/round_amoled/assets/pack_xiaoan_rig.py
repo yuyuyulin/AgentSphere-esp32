@@ -41,11 +41,17 @@ def prepare_parts(atlas: Image.Image, torso: Image.Image) -> dict[str, Image.Ima
     def eyes(source: Image.Image, left_size: tuple[int, int], right_size: tuple[int, int]) -> Image.Image:
         layer = Image.new("RGBA", (80, 48))
         for region, size, center in (
-            ((0, 0, w // 2, h), left_size, (18, 31)),
-            ((w // 2, 0, w, h), right_size, (64, 15)),
+            ((0, 0, w // 2, h), left_size, (18, 24)),
+            ((w // 2, 0, w, h), right_size, (64, 20)),
         ):
             sprite = fit(source.crop(region), size)
             layer.alpha_composite(sprite, (center[0] - size[0] // 2, center[1] - size[1] // 2))
+        return layer
+
+    def mouth(row: int, col: int, size: tuple[int, int]) -> Image.Image:
+        sprite = fit(cell(row, col), size)
+        layer = Image.new("RGBA", (30, 24))
+        layer.alpha_composite(sprite, ((30 - sprite.width) // 2, (24 - sprite.height) // 2))
         return layer
 
     return {
@@ -53,11 +59,11 @@ def prepare_parts(atlas: Image.Image, torso: Image.Image) -> dict[str, Image.Ima
         "Torso": fit(torso, (118, 74)),
         "LeftArm": fit(cell(0, 2), (46, 62)),
         "RightArm": fit(cell(1, 0), (46, 62)),
-        "EyesOpen": eyes(cell(1, 1), (26, 30), (23, 27)),
-        "EyesClosed": eyes(cell(1, 2), (26, 9), (23, 9)),
-        "Smile": fit(cell(2, 0), (30, 24)),
-        "Speaking": fit(cell(2, 1), (30, 24)),
-        "Thinking": fit(cell(2, 2), (30, 24)),
+        "EyesOpen": eyes(cell(1, 1), (18, 25), (17, 24)),
+        "EyesClosed": eyes(cell(1, 2), (19, 8), (18, 8)),
+        "Smile": mouth(2, 0, (24, 10)),
+        "Speaking": mouth(2, 1, (26, 17)),
+        "Thinking": mouth(2, 2, (21, 9)),
     }
 
 

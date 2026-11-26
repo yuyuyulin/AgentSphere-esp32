@@ -216,6 +216,8 @@ WSS 连接建立后 10 秒内，设备必须发送 `hello` 完成参数协商，
 
 ### 3.3 上行控制信令（ESP32 → AgentSphere）
 
+英语练习的会话标识、能力协商、开场、重听和退出在 [固件实施计划](english-practice.md) 与 [AgentSphere #61](https://github.com/yuyuyulin/AgentSphere/issues/61) 联合审阅。现有日常语音沿用 v1。
+
 | `type` | 触发时机 | 关键字段 | 说明 |
 | --- | --- | --- | --- |
 | `hello` | WSS 建连后首帧 | `protocol_version`, `fw_version`, `audio`, `active_scene_id` | 协商 Opus 参数与同步状态 |

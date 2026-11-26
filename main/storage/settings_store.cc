@@ -12,6 +12,7 @@ namespace agentsphere {
 namespace {
 constexpr const char* kTag = "SettingsStore";
 constexpr const char* kNamespace = "as_cfg";
+constexpr const char* kKeyQuickControls = "quick_ctrl";
 constexpr const char* kKeyWifiCount = "wifi_cnt";
 constexpr const char* kKeyDevUid = "dev_uid";
 constexpr const char* kKeyDevToken = "dev_tok";
@@ -42,6 +43,25 @@ esp_err_t SettingsStore::Init() {
     if (err == ESP_OK) {
         nvs_close(h);
     }
+    return err;
+}
+
+QuickControls SettingsStore::LoadQuickControls() const {
+    nvs_handle_t h = 0;
+    if (nvs_open(kNamespace, NVS_READONLY, &h) != ESP_OK) return {};
+    uint32_t value = 0;
+    const auto err = nvs_get_u32(h, kKeyQuickControls, &value);
+    nvs_close(h);
+    return err == ESP_OK ? QuickControls::Decode(value) : QuickControls{};
+}
+
+esp_err_t SettingsStore::SaveQuickControls(const QuickControls& controls) {
+    nvs_handle_t h = 0;
+    auto err = nvs_open(kNamespace, NVS_READWRITE, &h);
+    if (err != ESP_OK) return err;
+    err = nvs_set_u32(h, kKeyQuickControls, controls.Encode());
+    if (err == ESP_OK) err = nvs_commit(h);
+    nvs_close(h);
     return err;
 }
 
@@ -113,6 +133,7 @@ esp_err_t SettingsStore::SaveWifi(const std::string& ssid, const std::string& pa
         return ESP_ERR_INVALID_ARG;
     }
     auto list = LoadWifiList();
+    if (!list.empty() && list.front().ssid == ssid && list.front().password == password) return ESP_OK;
     list.erase(
         std::remove_if(list.begin(), list.end(),
                        [&ssid](const WifiCredential& c) { return c.ssid == ssid; }),

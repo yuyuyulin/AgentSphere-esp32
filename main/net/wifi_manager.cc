@@ -120,31 +120,40 @@ std::vector<ScannedAp> WifiManager::ScanNearbyAps() {
 
 esp_err_t WifiManager::ConnectSavedNetworks() {
     if (!initialized_ || !store_) return ESP_ERR_INVALID_STATE;
-
     const auto saved = store_->LoadWifiList();
-    if (saved.empty()) {
-        ESP_LOGI(kTag, "No saved Wi-Fi networks found in NVS");
-        return ESP_ERR_NOT_FOUND;
+    if (saved.empty()) return ESP_ERR_NOT_FOUND;
+
+    CancelConnectionAttempt();
+    saved_candidates_ = SavedWifiCandidates(saved, ScanNearbyAps());
+    ESP_LOGI(kTag, "Trying %u saved Wi-Fi candidate(s)", static_cast<unsigned>(saved_candidates_.size()));
+    const auto err = TryNextSavedNetwork();
+    // The application opens first-time setup only if NVS has no saved network.
+    return err == ESP_ERR_NOT_FOUND ? ESP_FAIL : err;
+}
+
+esp_err_t WifiManager::TryNextSavedNetwork() {
+    while (!saved_candidates_.empty()) {
+        auto candidate = std::move(saved_candidates_.front());
+        saved_candidates_.erase(saved_candidates_.begin());
+        const auto err = ConnectTo(candidate.ssid, candidate.password, true);
+        if (err == ESP_OK) return ESP_OK;
+        ESP_LOGW(kTag, "Could not start saved Wi-Fi attempt: %s", esp_err_to_name(err));
     }
+    return ESP_ERR_NOT_FOUND;
+}
 
-    ESP_LOGI(kTag, "Found %u saved Wi-Fi network(s); scanning nearby 2.4GHz APs...",
-             static_cast<unsigned>(saved.size()));
-    const auto scanned = ScanNearbyAps();
+void WifiManager::CancelConnectionAttempt() {
+    std::lock_guard<std::mutex> lock(station_mutex_);
+    if (!connecting_) return;
+    connecting_ = false;
+    save_pending_ = false;
+    ++attempt_;
+    esp_wifi_disconnect();
+}
 
-    // Pick highest-priority saved SSID that is currently visible
-    for (const auto& cred : saved) {
-        for (const auto& ap : scanned) {
-            if (ap.ssid == cred.ssid) {
-                ESP_LOGI(kTag, "Matched visible saved Wi-Fi '%s' (rssi=%d)",
-                         cred.ssid.c_str(), ap.rssi);
-                return ConnectTo(cred.ssid, cred.password, true);
-            }
-        }
-    }
-
-    // Fallback to most-recently-used SSID (supports hidden SSIDs)
-    ESP_LOGI(kTag, "No saved SSID matched scan; trying most recent '%s'", saved[0].ssid.c_str());
-    return ConnectTo(saved[0].ssid, saved[0].password, true);
+std::string WifiManager::current_ip() const {
+    std::lock_guard<std::mutex> lock(station_mutex_);
+    return current_ip_;
 }
 
 esp_err_t WifiManager::ConnectTo(const std::string& ssid,
@@ -154,29 +163,37 @@ esp_err_t WifiManager::ConnectTo(const std::string& ssid,
         return ESP_ERR_INVALID_ARG;
     }
 
+    std::lock_guard<std::mutex> lock(station_mutex_);
+    esp_wifi_disconnect();
     connected_ = false;
+    current_ip_.clear();
+    ++attempt_;
+    connecting_ = false;
     retry_count_ = 0;
     target_ssid_ = ssid;
     target_password_ = password;
     save_pending_ = save_on_success;
 
     wifi_config_t sta_cfg{};
-    std::strncpy(reinterpret_cast<char*>(sta_cfg.sta.ssid), ssid.c_str(), sizeof(sta_cfg.sta.ssid) - 1);
-    std::strncpy(reinterpret_cast<char*>(sta_cfg.sta.password), password.c_str(),
-                 sizeof(sta_cfg.sta.password) - 1);
+    std::memcpy(sta_cfg.sta.ssid, ssid.data(), ssid.size());
+    std::memcpy(sta_cfg.sta.password, password.data(), password.size());
     sta_cfg.sta.threshold.authmode = password.empty() ? WIFI_AUTH_OPEN : WIFI_AUTH_WPA2_PSK;
     sta_cfg.sta.pmf_cfg.capable = true;
     sta_cfg.sta.pmf_cfg.required = false;
 
-    esp_wifi_disconnect();
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
+    const auto config_err = esp_wifi_set_config(WIFI_IF_STA, &sta_cfg);
+    if (config_err != ESP_OK) return config_err;
     ESP_LOGI(kTag, "Connecting STA to '%s'...", ssid.c_str());
-    return esp_wifi_connect();
+    const auto err = esp_wifi_connect();
+    connecting_ = err == ESP_OK;
+    return err;
 }
 
 esp_err_t WifiManager::EnableSoftAp(const std::string& ap_ssid) {
     if (!initialized_) return ESP_ERR_INVALID_STATE;
 
+    ClearSavedCandidates();
+    CancelConnectionAttempt();
     wifi_config_t ap_cfg{};
     std::strncpy(reinterpret_cast<char*>(ap_cfg.ap.ssid), ap_ssid.c_str(), sizeof(ap_cfg.ap.ssid) - 1);
     ap_cfg.ap.ssid_len = static_cast<uint8_t>(ap_ssid.size());
@@ -186,14 +203,21 @@ esp_err_t WifiManager::EnableSoftAp(const std::string& ap_ssid) {
 
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
-    softap_active_ = true;
+    {
+        std::lock_guard<std::mutex> lock(station_mutex_);
+        softap_active_ = true;
+    }
     ESP_LOGI(kTag, "SoftAP enabled: SSID='%s' IP=192.168.4.1", ap_ssid.c_str());
     return ESP_OK;
 }
 
 esp_err_t WifiManager::DisableSoftAp() {
-    if (!initialized_ || !softap_active_) return ESP_OK;
-    softap_active_ = false;
+    if (!initialized_) return ESP_OK;
+    {
+        std::lock_guard<std::mutex> lock(station_mutex_);
+        if (!softap_active_) return ESP_OK;
+        softap_active_ = false;
+    }
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
     ESP_LOGI(kTag, "SoftAP disabled; returned to STA-only mode");
     return ESP_OK;
@@ -202,27 +226,36 @@ esp_err_t WifiManager::DisableSoftAp() {
 void WifiManager::OnWifiEvent(void* arg,
                               esp_event_base_t /*base*/,
                               int32_t event_id,
-                              void* /*data*/) {
+                              void* data) {
     auto* self = static_cast<WifiManager*>(arg);
-    if (!self) return;
+    if (!self || event_id != WIFI_EVENT_STA_DISCONNECTED) return;
+    const auto* event = static_cast<const wifi_event_sta_disconnected_t*>(data);
+    std::lock_guard<std::mutex> lock(self->station_mutex_);
+    const bool was_connected = self->connected_.load();
+    if (!was_connected && !self->connecting_) return;
+    if (event && !was_connected) {
+        // An explicit disconnect from a previous attempt can arrive after the
+        // next attempt starts. Do not count it against the new candidate.
+        if (event->reason == WIFI_REASON_ASSOC_LEAVE) return;
+        const std::string ssid(reinterpret_cast<const char*>(event->ssid), event->ssid_len);
+        if (!ssid.empty() && ssid != self->target_ssid_) return;
+    }
 
-    if (event_id == WIFI_EVENT_STA_DISCONNECTED) {
-        const bool was_connected = self->connected_;
-        self->connected_ = false;
-        self->current_ip_.clear();
+    self->connected_ = false;
+    self->current_ip_.clear();
+    const int direct_retries = self->softap_active_ ? kMaxDirectRetries : 0;
+    if (!was_connected && self->retry_count_ < direct_retries) {
+        ++self->retry_count_;
+        if (esp_wifi_connect() == ESP_OK) return;
+    }
 
-        if (!self->target_ssid_.empty() && self->retry_count_ < kMaxDirectRetries) {
-            ++self->retry_count_;
-            ESP_LOGW(kTag, "STA disconnected; retry %d/%d for '%s'",
-                     self->retry_count_, kMaxDirectRetries, self->target_ssid_.c_str());
-            esp_wifi_connect();
-        } else if (was_connected || self->retry_count_ >= kMaxDirectRetries) {
-            AppEvent ev{};
-            ev.type = was_connected ? AppEventType::WifiDisconnected : AppEventType::WifiConnectTimeout;
-            if (self->event_queue_) {
-                xQueueSend(self->event_queue_, &ev, 0);
-            }
-        }
+    self->connecting_ = false;
+    self->save_pending_ = false;
+    if (self->event_queue_) {
+        AppEvent ev{};
+        ev.type = was_connected ? AppEventType::WifiDisconnected : AppEventType::WifiConnectTimeout;
+        ev.value = self->attempt();
+        xQueueSend(self->event_queue_, &ev, 0);
     }
 }
 
@@ -233,26 +266,33 @@ void WifiManager::OnIpEvent(void* arg,
     auto* self = static_cast<WifiManager*>(arg);
     if (!self || event_id != IP_EVENT_STA_GOT_IP) return;
 
+    std::lock_guard<std::mutex> lock(self->station_mutex_);
+    if (!self->connecting_) return;
+    wifi_ap_record_t ap{};
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK ||
+        self->target_ssid_ != reinterpret_cast<const char*>(ap.ssid)) return;
+
     auto* ip_ev = static_cast<ip_event_got_ip_t*>(data);
     char ip_buf[16];
     std::snprintf(ip_buf, sizeof(ip_buf), IPSTR, IP2STR(&ip_ev->ip_info.ip));
 
+    self->connecting_ = false;
     self->connected_ = true;
     self->retry_count_ = 0;
-    self->current_ssid_ = self->target_ssid_;
     self->current_ip_ = ip_buf;
 
-    if (self->save_pending_ && self->store_ && !self->target_ssid_.empty()) {
-        self->store_->SaveWifi(self->target_ssid_, self->target_password_);
-        self->save_pending_ = false;
+    if (self->save_pending_ && self->store_) {
+        const auto err = self->store_->SaveWifi(self->target_ssid_, self->target_password_);
+        if (err != ESP_OK) ESP_LOGW(kTag, "Could not save Wi-Fi priority: %s", esp_err_to_name(err));
     }
+    self->save_pending_ = false;
 
-    ESP_LOGI(kTag, "Connected to '%s' (IP=%s)", self->current_ssid_.c_str(), ip_buf);
-
+    ESP_LOGI(kTag, "Connected to '%s' (IP=%s)", self->target_ssid_.c_str(), ip_buf);
     if (self->event_queue_) {
         AppEvent ev{};
         ev.type = AppEventType::WifiConnected;
-        std::snprintf(ev.ssid, sizeof(ev.ssid), "%s", self->current_ssid_.c_str());
+        ev.value = self->attempt();
+        std::snprintf(ev.ssid, sizeof(ev.ssid), "%s", self->target_ssid_.c_str());
         std::snprintf(ev.ip, sizeof(ev.ip), "%s", ip_buf);
         xQueueSend(self->event_queue_, &ev, 0);
     }

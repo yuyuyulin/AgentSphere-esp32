@@ -54,7 +54,9 @@ private:
     bool home_press_active_ = false;
     lv_obj_t* quick_panel_ = nullptr;
     lv_obj_t* quick_wifi_ = nullptr;
+    lv_obj_t* quick_battery_icon_ = nullptr;
     lv_obj_t* quick_battery_ = nullptr;
+    lv_obj_t* quick_charge_status_ = nullptr;
     lv_obj_t* quick_volume_ = nullptr;
     lv_obj_t* quick_brightness_ = nullptr;
     lv_obj_t* quick_mic_ = nullptr;

@@ -193,12 +193,16 @@ void RoundAmoledDisplay::CreateQuickPanel(lv_obj_t* parent) {
         return obj;
     };
     auto status_icon = [&](const char* icon, int x) {
-        lv_obj_set_style_text_font(label(icon, x, -155), LV_FONT_DEFAULT, 0);
+        auto* object = label(icon, x, -155);
+        lv_obj_set_style_text_font(object, LV_FONT_DEFAULT, 0);
+        return object;
     };
     status_icon(LV_SYMBOL_WIFI, -106);
     quick_wifi_ = label("离线", -67, -155);
-    status_icon(LV_SYMBOL_BATTERY_FULL, 38);
+    quick_battery_icon_ = status_icon(LV_SYMBOL_BATTERY_EMPTY, 38);
     quick_battery_ = label("--", 87, -155);
+    quick_charge_status_ = label("", 75, -128);
+    lv_obj_set_style_text_color(quick_charge_status_, lv_color_hex(0xA9C4BF), 0);
 
     auto make_slider = [this](int min, int y) {
         auto* slider = lv_slider_create(quick_panel_);
@@ -323,11 +327,21 @@ void RoundAmoledDisplay::SetQuickPanelVisible(bool visible) {
 
 void RoundAmoledDisplay::UpdateQuickStatus() {
     lv_label_set_text_static(quick_wifi_, wifi_connected_ ? "在线" : "离线");
-    if (power_.battery_percent >= 0) {
+    constexpr const char* kBatteryIcons[] = {
+        LV_SYMBOL_BATTERY_EMPTY, LV_SYMBOL_BATTERY_1, LV_SYMBOL_BATTERY_2,
+        LV_SYMBOL_BATTERY_3, LV_SYMBOL_BATTERY_FULL,
+    };
+    const int level = XiaoAnBatteryIconLevel(power_);
+    lv_obj_set_hidden(quick_battery_icon_, level < 0);
+    if (level >= 0) {
+        lv_label_set_text_static(quick_battery_icon_, kBatteryIcons[level]);
         lv_label_set_text_fmt(quick_battery_, "%d%%", power_.battery_percent);
     } else {
         lv_label_set_text_static(quick_battery_, "--");
     }
+    const char* charge_status = XiaoAnPanelPowerText(power_);
+    if (charge_status) lv_label_set_text_static(quick_charge_status_, charge_status);
+    lv_obj_set_hidden(quick_charge_status_, charge_status == nullptr);
 }
 
 void RoundAmoledDisplay::SetQuickControls(const QuickControls& controls) {
@@ -388,10 +402,12 @@ void RoundAmoledDisplay::SetPowerStatus(const PowerStatus& power) {
         low_battery_ = low_battery;
         UpdatePromptVisibility();
     }
-    if (power_.battery_percent != power.battery_percent) {
-        power_ = power;
-        if (quick_visible_) UpdateQuickStatus();
-    }
+    const bool power_changed =
+        power_.battery_percent != power.battery_percent || power_.available != power.available ||
+        power_.usb_plugged != power.usb_plugged || power_.battery_present != power.battery_present ||
+        power_.charging != power.charging || power_.charge_complete != power.charge_complete;
+    power_ = power;
+    if (power_changed && quick_visible_) UpdateQuickStatus();
     // Retry a visibility update if a previous screen toggle could not lock LVGL.
     if (!requested_screen_on_.load()) SetQuickPanelVisible(false);
     theme_.SetScreenVisible(requested_screen_on_.load() && !quick_visible_);

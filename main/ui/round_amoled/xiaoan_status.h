@@ -29,4 +29,22 @@ constexpr bool XiaoAnShowLowBattery(const PowerStatus& power) {
            power.battery_percent >= 0 && power.battery_percent <= kLowBatteryPercent;
 }
 
+constexpr int XiaoAnBatteryIconLevel(const PowerStatus& power) {
+    const int percent = power.battery_percent;
+    if (!power.available || !power.battery_present || percent < 0 || percent > 100) return -1;
+    if (percent < 10) return 0;
+    if (percent < 35) return 1;
+    if (percent < 65) return 2;
+    if (percent < 90) return 3;
+    return 4;
+}
+
+constexpr const char* XiaoAnPanelPowerText(const PowerStatus& power) {
+    if (!power.available) return nullptr;
+    if (power.charging) return "充电中";
+    if (power.charge_complete) return "充电完成";
+    if (power.usb_plugged) return "USB供电";
+    return power.battery_present ? nullptr : "无电池";
+}
+
 }  // namespace agentsphere

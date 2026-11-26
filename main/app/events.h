@@ -27,6 +27,8 @@ struct PowerStatus {
     bool available = false;
     bool usb_plugged = false;
     bool charging = false;
+    bool charge_complete = false;
+    bool battery_present = false;
     int battery_percent = -1;
     int battery_mv = 0;
 };

@@ -615,11 +615,13 @@ void Application::HandleTick1Hz() {
 
     if ((tick_count_ % 10) == 0) {
         ESP_LOGI(kTag,
-                 "Telemetry | state=%s wifi=%d(%s) | pwr(usb=%d chg=%d soc=%d%% %dmV) | imu(%d: %.2f,%.2f,%.2f)",
+                 "Telemetry | state=%s wifi=%d(%s) | pwr(usb=%d chg=%d soc=%d%% %dmV) "
+                 "| battery(present=%d done=%d) | imu(%d: %.2f,%.2f,%.2f)",
                  DeviceStateToString(sm_.state()),
                  wifi_.is_connected(),
                  wifi_.is_connected() ? wifi_.current_ip().c_str() : "offline",
                  power.usb_plugged, power.charging, power.battery_percent, power.battery_mv,
+                 power.battery_present, power.charge_complete,
                  imu.valid, imu.ax, imu.ay, imu.az);
         LogMemoryWatermarks();
     }

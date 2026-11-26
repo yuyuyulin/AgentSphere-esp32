@@ -604,8 +604,7 @@ void Application::HandleTick1Hz() {
     }
 
     if (auto* display = board.GetDisplay()) {
-        if (screen_idle_.ShouldBlank(esp_timer_get_time(), power.usb_plugged, screen_on_,
-                                     sm_.state(), showing_pairing_)) {
+        if (screen_idle_.ShouldBlank(esp_timer_get_time(), screen_on_, sm_.state(), showing_pairing_)) {
             ESP_LOGI(kTag, "Display idle timeout; screen off");
             SetScreenOn(false);
         }

@@ -14,9 +14,9 @@ public:
         if (!CanBlank(previous, showing_pairing) || !CanBlank(next, showing_pairing)) Reset();
     }
 
-    bool ShouldBlank(int64_t now_us, bool usb_plugged, bool screen_on, DeviceState state,
+    bool ShouldBlank(int64_t now_us, bool screen_on, DeviceState state,
                      bool showing_pairing = true) {
-        if (!usb_plugged || !screen_on || !CanBlank(state, showing_pairing)) {
+        if (!screen_on || !CanBlank(state, showing_pairing)) {
             Reset();
             return false;
         }

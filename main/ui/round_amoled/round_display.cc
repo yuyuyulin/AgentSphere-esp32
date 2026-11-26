@@ -162,6 +162,7 @@ esp_err_t RoundAmoledDisplay::Init() {
 
     lv_obj_set_hidden(pair_panel_, true);
     CreateQuickPanel(scr);
+    CreatePracticePanel(scr);
 
     bsp_display_unlock();
 
@@ -257,7 +258,7 @@ void RoundAmoledDisplay::OnHomeTouch(lv_event_t* e) {
     auto* indev = lv_indev_active();
     const auto code = lv_event_get_code(e);
     if (!indev || code == LV_EVENT_PRESS_LOST || !self->requested_screen_on_.load() ||
-        self->overlay_active_ || self->quick_visible_) {
+        self->overlay_active_ || self->quick_visible_ || !lv_obj_is_hidden(self->practice_panel_)) {
         self->home_press_active_ = false;
         return;
     }
@@ -280,6 +281,16 @@ void RoundAmoledDisplay::OnHomeTouch(lv_event_t* e) {
         self->SetQuickPanelVisible(true);
         self->PostQuickEvent(AppEventType::DisplayActivity);
         ESP_LOGI(kTag, "Quick controls opened by downward swipe");
+        return;
+    }
+
+    if (self->practice_.page != PracticePage::Hidden &&
+        OpensEnglishMenu(start.x, start.y, pt.x, pt.y)) {
+        self->home_press_active_ = false;
+        if (code == LV_EVENT_PRESSING) lv_indev_wait_release(indev);
+        self->practice_menu_ = true;
+        self->RefreshVisibility();
+        self->PostQuickEvent(AppEventType::DisplayActivity);
         return;
     }
 
@@ -328,8 +339,106 @@ void RoundAmoledDisplay::SetQuickPanelVisible(bool visible) {
     quick_visible_ = visible;
     if (visible) UpdateQuickStatus();
     lv_obj_set_hidden(quick_panel_, !visible);
-    theme_.SetScreenVisible(requested_screen_on_.load() && !visible);
+    RefreshVisibility();
+}
+
+void RoundAmoledDisplay::CreatePracticePanel(lv_obj_t* parent) {
+    practice_panel_ = lv_obj_create(parent);
+    lv_obj_set_size(practice_panel_, 466, 466);
+    lv_obj_center(practice_panel_);
+    lv_obj_set_style_radius(practice_panel_, 0, 0);
+    lv_obj_set_style_border_width(practice_panel_, 0, 0);
+    lv_obj_set_style_bg_color(practice_panel_, lv_color_hex(0x0D191D), 0);
+    lv_obj_set_style_bg_opa(practice_panel_, LV_OPA_COVER, 0);
+    lv_obj_set_scrollable(practice_panel_, false);
+
+    auto label = [this](const char* text, int y) {
+        auto* obj = lv_label_create(practice_panel_);
+        lv_label_set_text_static(obj, text);
+        lv_obj_set_style_text_align(obj, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(obj, lv_color_hex(0xE4F3EE), 0);
+        lv_obj_align(obj, LV_ALIGN_TOP_MID, 0, y);
+        return obj;
+    };
+    label("英语练习", 72);
+    practice_status_ = label("", 117);
+    practice_caption_ = label("", 158);
+    lv_obj_set_size(practice_caption_, 296, 116);
+    lv_label_set_long_mode(practice_caption_, LV_LABEL_LONG_MODE_DOTS);
+
+    auto button = [this](const char* name, int width, int x, int y) {
+        auto* obj = lv_button_create(practice_panel_);
+        lv_obj_set_size(obj, width, 52);
+        lv_obj_align(obj, LV_ALIGN_CENTER, x, y);
+        lv_obj_set_style_bg_color(obj, lv_color_hex(0x254C46), 0);
+        lv_obj_add_event_cb(obj, &RoundAmoledDisplay::OnPracticeAction, LV_EVENT_CLICKED, this);
+        auto* text = lv_label_create(obj);
+        lv_label_set_text_static(text, name);
+        lv_obj_center(text);
+        return obj;
+    };
+    practice_enter_ = button("开始练习", 164, 0, 0);
+    practice_repeat_ = button("重听", 112, -67, 103);
+    practice_back_ = button("退出", 112, 67, 103);
+    lv_obj_set_hidden(practice_panel_, true);
+}
+
+void RoundAmoledDisplay::OnPracticeAction(lv_event_t* e) {
+    auto* self = static_cast<RoundAmoledDisplay*>(lv_event_get_user_data(e));
+    auto* target = lv_event_get_target(e);
+    if (target == self->practice_enter_) {
+        self->PostQuickEvent(AppEventType::PracticeEnter);
+    } else if (target == self->practice_repeat_) {
+        self->PostQuickEvent(AppEventType::PracticeRepeat);
+    } else {
+        self->practice_menu_ = false;
+        self->RefreshVisibility();
+        self->PostQuickEvent(AppEventType::PracticeExit);
+    }
+}
+
+const char* RoundAmoledDisplay::PracticeStatus() const {
+    if (practice_.page == PracticePage::Offline) return "联网后再试";
+    if (practice_.page == PracticePage::Entering) return "正在进入...";
+    if (practice_.page != PracticePage::Active) return "";
+    switch (state_) {
+        case DeviceState::Listening: return "正在聆听...";
+        case DeviceState::Thinking: return "正在思考...";
+        case DeviceState::Speaking: return "正在播报...";
+        default:
+            if (emotion_ == Emotion::Confused) return "对话失败，请重试";
+            return muted_ ? "已闭麦" : "按 BOOT 回答";
+    }
+}
+
+void RoundAmoledDisplay::RefreshVisibility() {
+    const bool on = requested_screen_on_.load();
+    const bool active = practice_.page == PracticePage::Entering || practice_.page == PracticePage::Active;
+    const bool show = on && !overlay_active_ && !quick_visible_ && (practice_menu_ || active);
+    lv_obj_set_hidden(practice_panel_, !show);
+    if (show) {
+        lv_label_set_text_static(practice_status_, PracticeStatus());
+        lv_obj_set_hidden(practice_caption_, !active || practice_.caption.empty());
+        lv_obj_set_hidden(practice_enter_, practice_.page != PracticePage::Available);
+        lv_obj_set_hidden(practice_repeat_, practice_.page != PracticePage::Active);
+        lv_obj_set_state(practice_repeat_, LV_STATE_DISABLED, !practice_.can_repeat);
+        lv_obj_align(practice_back_, LV_ALIGN_CENTER, practice_.page == PracticePage::Active ? 67 : 0, 103);
+    }
+    theme_.SetScreenVisible(on && !quick_visible_ && !show);
     UpdatePromptVisibility();
+}
+
+void RoundAmoledDisplay::SetPractice(const PracticeView& practice) {
+    if (!initialized_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) return;
+    if (!(practice_ == practice)) {
+        if (practice.page == PracticePage::Hidden || practice_.page == PracticePage::Active ||
+            practice_.page == PracticePage::Entering) practice_menu_ = false;
+        const bool caption_changed = practice_.caption != practice.caption;
+        practice_ = practice;
+        if (caption_changed) lv_label_set_text(practice_caption_, practice_.caption.c_str());
+        RefreshVisibility();
+    }
+    bsp_display_unlock();
 }
 
 void RoundAmoledDisplay::UpdateQuickStatus() {
@@ -353,6 +462,7 @@ void RoundAmoledDisplay::UpdateQuickStatus() {
 
 void RoundAmoledDisplay::SetQuickControls(const QuickControls& controls) {
     if (!initialized_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) return;
+    muted_ = controls.muted;
     lv_slider_set_value(quick_volume_, controls.volume, LV_ANIM_OFF);
     lv_slider_set_value(quick_brightness_, controls.brightness, LV_ANIM_OFF);
     lv_obj_set_state(quick_mic_, LV_STATE_CHECKED, controls.muted);
@@ -368,6 +478,7 @@ void RoundAmoledDisplay::SetWifiStatus(bool connected, const char*, const char*)
 
 void RoundAmoledDisplay::UpdatePromptVisibility() {
     const bool show_prompts = requested_screen_on_.load() && !overlay_active_ && !quick_visible_ &&
+                              (!practice_panel_ || lv_obj_is_hidden(practice_panel_)) &&
                               state_ != DeviceState::Sleeping;
     const char* status = XiaoAnStatusText(state_, emotion_);
     if (show_prompts && status) {
@@ -385,8 +496,9 @@ void RoundAmoledDisplay::SetState(DeviceState state, const char*) {
         state_ = state;
         emotion_ = Emotion::Neutral;
     }
+    if (practice_.page == PracticePage::Available && state != DeviceState::Idle) practice_menu_ = false;
     theme_.SetState(state);
-    UpdatePromptVisibility();
+    RefreshVisibility();
     bsp_display_unlock();
 }
 
@@ -396,7 +508,7 @@ void RoundAmoledDisplay::SetEmotion(Emotion emotion) {
     }
     emotion_ = emotion;
     theme_.SetEmotion(emotion);
-    UpdatePromptVisibility();
+    RefreshVisibility();
     bsp_display_unlock();
 }
 
@@ -417,9 +529,11 @@ void RoundAmoledDisplay::SetPowerStatus(const PowerStatus& power) {
     if (power_changed && quick_visible_) UpdateQuickStatus();
     // Retry pending screen changes if an earlier call could not lock LVGL.
     ApplyBrightnessLocked();
-    if (!requested_screen_on_.load()) SetQuickPanelVisible(false);
-    theme_.SetScreenVisible(requested_screen_on_.load() && !quick_visible_);
-    UpdatePromptVisibility();
+    if (!requested_screen_on_.load()) {
+        practice_menu_ = false;
+        SetQuickPanelVisible(false);
+    }
+    RefreshVisibility();
     bsp_display_unlock();
 }
 
@@ -438,6 +552,7 @@ void RoundAmoledDisplay::ShowProvisioning(const char* ap_ssid, const char* ip_ad
         return;
     }
     if (ap_ssid && ap_ssid[0] != '\0') {
+        practice_menu_ = false;
         SetQuickPanelVisible(false);
         char buf[96];
         std::snprintf(buf, sizeof(buf), "热点: %s", ap_ssid);
@@ -459,7 +574,7 @@ void RoundAmoledDisplay::ShowProvisioning(const char* ap_ssid, const char* ip_ad
         lv_obj_set_hidden(prov_panel_, true);
         overlay_active_ = (pair_panel_ && !lv_obj_is_hidden(pair_panel_));
     }
-    UpdatePromptVisibility();
+    RefreshVisibility();
     lv_obj_invalidate(lv_screen_active());
     bsp_display_unlock();
 }
@@ -498,6 +613,7 @@ void RoundAmoledDisplay::ShowPairingCode(const char* code, const char* hint) {
     }
     const bool was_hidden = lv_obj_is_hidden(pair_panel_);
     if (code && code[0] != '\0') {
+        practice_menu_ = false;
         SetQuickPanelVisible(false);
         if (IsAsciiOnly(code)) {
 #if LV_FONT_MONTSERRAT_28
@@ -525,7 +641,7 @@ void RoundAmoledDisplay::ShowPairingCode(const char* code, const char* hint) {
             lv_obj_invalidate(lv_screen_active());
         }
     }
-    UpdatePromptVisibility();
+    RefreshVisibility();
     bsp_display_unlock();
 }
 
@@ -552,9 +668,11 @@ void RoundAmoledDisplay::SetScreenOn(bool on) {
     if (on) requested_brightness_.store(brightness_percent_);
     requested_screen_on_.store(on);
     if (bsp_display_lock(kLockTimeoutMs) == ESP_OK) {
-        if (!on) SetQuickPanelVisible(false);
-        theme_.SetScreenVisible(on && !quick_visible_);
-        UpdatePromptVisibility();
+        if (!on) {
+            practice_menu_ = false;
+            SetQuickPanelVisible(false);
+        }
+        RefreshVisibility();
         ApplyBrightnessLocked();
         bsp_display_unlock();
     }

@@ -1,6 +1,6 @@
-# 小安英语练习固件实施计划
+# 小安英语练习固件
 
-> 提案待审阅。设备端由 [固件 #22](https://github.com/yuyuyulin/AgentSphere-esp32/issues/22) 交付。网页、提示词和场景服务由 [AgentSphere #61](https://github.com/yuyuyulin/AgentSphere/issues/61) 交付并维护联调契约。
+> 固件实现与服务端联调分别在各自 PR 审阅。设备端由 [固件 #22](https://github.com/yuyuyulin/AgentSphere-esp32/issues/22) 交付。网页、提示词和场景服务由 [AgentSphere #61](https://github.com/yuyuyulin/AgentSphere/issues/61) 交付并维护联调契约。
 
 ## 首版操作
 
@@ -15,9 +15,9 @@
 
 ### 1. 接入独立场景
 
-- 修改 `main/protocol/voice_client.h` 和 `main/protocol/voice_client.cc`。在 v1 握手声明 `features: ["english_practice"]`，初始场景为 `default`。按 `hello_ack.scenes` 判断练习能力。
+- 修改 `main/protocol/voice_client.h` 和 `main/protocol/voice_client.cc`。有屏设备在 v1 握手声明 `features: ["english_practice", "captions_v1"]`，初始场景为 `default`。按 `hello_ack.scenes` 判断练习能力。
 - 每次开局由设备生成 `request_id` 和开场 `turn_id`。收到匹配的 `scene.ack` 后保存服务端 `practice_id`，再按同一局、同一轮接受开场 `tts.start`。开场直接播放，麦克风等待孩子按键才开启。
-- 练习轮沿用 Opus 帧和回执。客户端用 `scene_id`、`practice_id`、`turn_id` 校验练习控制帧，收音和播放共用现有单轮状态。重听通过 `scene.repeat` 携带新的 `turn_id`，服务端重放最近完整语音。
+- 练习轮沿用 Opus 帧和回执。客户端按控制帧校验场景、`practice_id` 和 `turn_id`。练习录音收到同一局、同一轮的 `listen.ack` 后才上行 Opus 音频帧。收音和播放共用现有单轮状态。重听通过 `scene.repeat` 携带新的 `turn_id`，服务端重放最近完整语音。
 - 退出时先本地停止播放和收音、清队列，再发送 `scene.exit`。服务端确认后继续日常语音。退出超时则重连并回到日常。设备丢弃旧练习的迟到回复。断线、解绑或开局失败退回日常。
 - 用替身 WSS 和主机回归覆盖无场景能力的旧服务端、进入成功与超时、重复或迟到确认、切换后拒收旧练习播放头、断线复位与重听。真人听测等两端联调。
 
@@ -38,4 +38,12 @@
 | 退出与重连 | 在播报或等待时退出，音频立即停止。之后回来只播新练习。断线恢复后回到日常。 |
 | 兼容和闭麦 | 连接旧服务端时日常问答可用。闭麦时练习页禁止发起新收音。 |
 
-构建成功、替身协议通过、设备播放回执和用户听测分别记录。当前文件只记录待实施计划。
+构建成功、替身协议通过、设备播放回执和用户听测分别记录。
+
+## 当前验证记录
+
+- 六项主机回归通过。语音消息替身用真实固件 `VoiceClient` 与 cJSON，覆盖旧服务端、无屏协商、开场、重听、闭麦、多轮收音、关联校验、退出停播、过期语音、拒绝进入、断线和超时。
+- ESP-IDF v6.1（`esp32s3`）圆屏固件 `0x24e320`，应用分区余量 42%。无屏版 `0x136a60`，余量 70%。
+- 两端报文已对照 AgentSphere PR #62。部署后的联网与微雪 1.75C 真机听测待联合验收。
+
+构建下载组件后运行 `sh tests/voice_fixture/run.sh`。也可把已下载的 cJSON 源码目录作为第一个参数传入。

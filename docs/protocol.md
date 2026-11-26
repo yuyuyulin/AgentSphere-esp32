@@ -216,7 +216,7 @@ WSS 连接建立后 10 秒内，设备必须发送 `hello` 完成参数协商，
 
 ### 3.3 上行控制信令（ESP32 → AgentSphere）
 
-英语练习的会话标识、能力协商、开场、重听和退出在 [固件实施计划](english-practice.md) 与 [AgentSphere #61](https://github.com/yuyuyulin/AgentSphere/issues/61) 联合审阅。现有日常语音沿用 v1。
+有屏固件通过 `hello.features` 可选数组声明 `english_practice` 和 `captions_v1`。仅在服务端通过 `hello_ack.scenes` 宣告后打开练习入口。练习增加 `scene.repeat`，按 `practice_id` 和 `turn_id` 过滤旧帧。开场、重听和退出详见[固件实现](english-practice.md)及 [AgentSphere PR #62](https://github.com/yuyuyulin/AgentSphere/pull/62)。日常语音沿用 v1。
 
 | `type` | 触发时机 | 关键字段 | 说明 |
 | --- | --- | --- | --- |

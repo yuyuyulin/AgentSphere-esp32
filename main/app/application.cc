@@ -239,7 +239,7 @@ void Application::HandleEvent(const AppEvent& ev) {
             if (!bootstrap_.ws_url().empty()) {
                 std::string uid, token;
                 if (settings_.LoadDeviceCredentials(&uid, &token) &&
-                    !voice_.Start(audio, event_queue_, bootstrap_.ws_url(), uid, token)) {
+                    !voice_.Start(audio, event_queue_, bootstrap_.ws_url(), uid, token, board.GetCapabilities().has_screen)) {
                     ESP_LOGW(kTag, "Voice client could not start");
                 }
             }
@@ -410,6 +410,15 @@ void Application::HandleEvent(const AppEvent& ev) {
             }
             break;
         }
+        case AppEventType::PracticeEnter:
+        case AppEventType::PracticeRepeat:
+        case AppEventType::PracticeExit:
+            screen_idle_.Reset();
+            if (ev.type == AppEventType::PracticeEnter) voice_.EnterPractice();
+            if (ev.type == AppEventType::PracticeRepeat) voice_.RepeatPractice();
+            if (ev.type == AppEventType::PracticeExit) voice_.ExitPractice();
+            UpdateVoiceDisplay();
+            break;
         case AppEventType::DisplayActivity:
             if (screen_on_) screen_idle_.Reset();
             break;
@@ -479,6 +488,7 @@ void Application::HandleEvent(const AppEvent& ev) {
 void Application::UpdateVoiceDisplay() {
     const VoiceState state = voice_.state();
     const bool error = voice_.TakeError();
+    if (auto* display = Board::GetInstance().GetDisplay()) display->SetPractice(voice_.GetPracticeView());
     if (state == displayed_voice_state_ && !error) return;
     displayed_voice_state_ = state;
     if (!wifi_.is_connected() || sm_.state() == DeviceState::WifiConfiguring) return;
@@ -518,11 +528,15 @@ void Application::UpdateVoiceDisplay() {
         case VoiceState::Listening:
             sm_.TransitionTo(DeviceState::Listening);
             break;
+        case VoiceState::EnteringPractice:
         case VoiceState::Thinking:
             sm_.TransitionTo(DeviceState::Thinking);
             break;
         case VoiceState::Speaking:
             sm_.TransitionTo(DeviceState::Speaking);
+            break;
+        case VoiceState::ExitingPractice:
+            sm_.TransitionTo(DeviceState::Idle);
             break;
         case VoiceState::Disabled:
             break;

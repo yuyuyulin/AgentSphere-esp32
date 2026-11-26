@@ -16,6 +16,10 @@ int main() {
     assert(!OpensQuickPanel(180, 50, 260, 110));
     assert(!OpensQuickPanel(233, 45, 235, 55));
 
+    assert(QuickControls::ClampBrightness(4) == 10);
+    assert(QuickControls::ClampBrightness(47) == 47);
+    assert(QuickControls::ClampBrightness(110) == 100);
+
     const QuickControls defaults;
     assert(defaults.volume == 95 && defaults.brightness == 80 && !defaults.muted);
     const QuickControls saved{34, 26, true};

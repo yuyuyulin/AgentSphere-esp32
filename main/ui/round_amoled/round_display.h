@@ -42,6 +42,7 @@ private:
     void UpdateQuickStatus();
     void PostQuickEvent(AppEventType type, int value = 0);
     void UpdatePromptVisibility();
+    void ApplyBrightnessLocked();
 
     QueueHandle_t event_queue_ = nullptr;
     ThemeRenderer theme_;
@@ -70,6 +71,8 @@ private:
     lv_obj_t* pair_code_label_ = nullptr;
     lv_obj_t* pair_hint_label_ = nullptr;
     uint8_t brightness_percent_ = 80;
+    std::atomic<uint8_t> requested_brightness_{80};
+    uint8_t applied_brightness_ = 100;
     bool initialized_ = false;
     bool overlay_active_ = false;
     bool quick_visible_ = false;

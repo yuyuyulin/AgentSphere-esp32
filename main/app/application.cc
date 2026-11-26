@@ -136,7 +136,7 @@ void Application::UpdateQuickControls(const AppEvent& ev) {
             }
             break;
         case AppEventType::BrightnessChanged:
-            quick_controls_.brightness = std::clamp(ev.value, int(QuickControls::kMinBrightness), 100);
+            quick_controls_.brightness = QuickControls::ClampBrightness(ev.value);
             if (display) display->SetBrightness(quick_controls_.brightness);
             break;
         case AppEventType::MicrophoneMuteChanged:

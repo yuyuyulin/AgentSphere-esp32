@@ -36,12 +36,11 @@ esp_err_t RoundAmoledDisplay::Init() {
         return ESP_FAIL;
     }
 
-    bsp_display_brightness_set(brightness_percent_);
-
     if (bsp_display_lock(kLockTimeoutMs) != ESP_OK) {
         ESP_LOGE(kTag, "Failed to lock LVGL display");
         return ESP_ERR_TIMEOUT;
     }
+    ApplyBrightnessLocked();
 
     lv_obj_t* scr = lv_screen_active();
     lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), 0);
@@ -221,6 +220,8 @@ void RoundAmoledDisplay::CreateQuickPanel(lv_obj_t* parent) {
     quick_volume_ = make_slider(0, -74);
     label("亮度", 0, -24);
     quick_brightness_ = make_slider(QuickControls::kMinBrightness, 12);
+    lv_obj_add_event_cb(quick_brightness_, &RoundAmoledDisplay::OnQuickControl, LV_EVENT_VALUE_CHANGED, this);
+    lv_obj_add_event_cb(quick_brightness_, &RoundAmoledDisplay::OnQuickControl, LV_EVENT_PRESS_LOST, this);
     label("闭麦", -52, 83);
     quick_mic_ = lv_switch_create(quick_panel_);
     lv_obj_set_size(quick_mic_, 67, 40);
@@ -306,10 +307,16 @@ void RoundAmoledDisplay::OnQuickPanelGesture(lv_event_t* e) {
 void RoundAmoledDisplay::OnQuickControl(lv_event_t* e) {
     auto* self = static_cast<RoundAmoledDisplay*>(lv_event_get_user_data(e));
     auto* target = static_cast<lv_obj_t*>(lv_event_get_target(e));
-    if (lv_event_get_code(e) == LV_EVENT_PRESSED) {
+    const auto code = lv_event_get_code(e);
+    if (code == LV_EVENT_PRESSED) {
         self->PostQuickEvent(AppEventType::DisplayActivity);
     } else if (target == self->quick_mic_) {
         self->PostQuickEvent(AppEventType::MicrophoneMuteChanged, lv_obj_has_state(target, LV_STATE_CHECKED));
+    } else if (code == LV_EVENT_VALUE_CHANGED) {
+        if (self->quick_visible_ && self->requested_screen_on_.load()) {
+            self->requested_brightness_.store(QuickControls::ClampBrightness(lv_slider_get_value(target)));
+            self->ApplyBrightnessLocked();
+        }
     } else {
         const auto type = target == self->quick_volume_ ? AppEventType::VolumeChanged : AppEventType::BrightnessChanged;
         self->PostQuickEvent(type, lv_slider_get_value(target));
@@ -408,7 +415,8 @@ void RoundAmoledDisplay::SetPowerStatus(const PowerStatus& power) {
         power_.charging != power.charging || power_.charge_complete != power.charge_complete;
     power_ = power;
     if (power_changed && quick_visible_) UpdateQuickStatus();
-    // Retry a visibility update if a previous screen toggle could not lock LVGL.
+    // Retry pending screen changes if an earlier call could not lock LVGL.
+    ApplyBrightnessLocked();
     if (!requested_screen_on_.load()) SetQuickPanelVisible(false);
     theme_.SetScreenVisible(requested_screen_on_.load() && !quick_visible_);
     UpdatePromptVisibility();
@@ -521,28 +529,34 @@ void RoundAmoledDisplay::ShowPairingCode(const char* code, const char* hint) {
     bsp_display_unlock();
 }
 
+void RoundAmoledDisplay::ApplyBrightnessLocked() {
+    // LVGL flush and AMOLED brightness both use the same SPI device.
+    const uint8_t level = requested_screen_on_.load() ? requested_brightness_.load() : 0;
+    if (level == applied_brightness_) return;
+    const auto err = level == 0 ? bsp_display_backlight_off() : bsp_display_brightness_set(level);
+    if (err == ESP_OK) applied_brightness_ = level;
+}
+
 void RoundAmoledDisplay::SetBrightness(uint8_t percent) {
-    brightness_percent_ = percent > 100 ? 100 : percent;
-    if (initialized_ && requested_screen_on_.load()) {
-        bsp_display_brightness_set(brightness_percent_);
-    }
+    brightness_percent_ = QuickControls::ClampBrightness(percent);
+    requested_brightness_.store(brightness_percent_);
+    if (!initialized_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) return;
+    ApplyBrightnessLocked();
+    bsp_display_unlock();
 }
 
 void RoundAmoledDisplay::SetScreenOn(bool on) {
     if (!initialized_) {
         return;
     }
+    if (on) requested_brightness_.store(brightness_percent_);
     requested_screen_on_.store(on);
     if (bsp_display_lock(kLockTimeoutMs) == ESP_OK) {
         if (!on) SetQuickPanelVisible(false);
         theme_.SetScreenVisible(on && !quick_visible_);
         UpdatePromptVisibility();
+        ApplyBrightnessLocked();
         bsp_display_unlock();
-    }
-    if (on) {
-        bsp_display_brightness_set(brightness_percent_ > 0 ? brightness_percent_ : 80);
-    } else {
-        bsp_display_backlight_off();
     }
 }
 

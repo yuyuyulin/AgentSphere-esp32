@@ -23,6 +23,8 @@
 #include "freertos/task.h"
 #include "ui/audio_only_display.h"
 
+#include "boards/waveshare_1_75c/speech_output.h"
+
 #if CONFIG_AS_ENABLE_LVGL
 #include "ui/round_amoled/round_display.h"
 #endif
@@ -34,7 +36,7 @@ namespace {
 constexpr const char* kTag = "Board1.75C";
 constexpr gpio_num_t kBootButtonGpio = GPIO_NUM_0;
 constexpr uint32_t kI2cFreqHz = 400000;
-constexpr int kAudioSampleRateHz = 16000;
+constexpr int kAudioSampleRateHz = WaveshareSpeechOutput::kSampleRateHz;
 
 constexpr uint8_t kAxp2101Addr = 0x34;
 constexpr uint8_t kQmi8658AddrPrimary = 0x6B;
@@ -132,7 +134,7 @@ public:
 
     esp_err_t PlayTone(int frequency_hz, int duration_ms) override {
         if (!ready_ || duration_ms <= 0 || frequency_hz <= 0) return ESP_ERR_INVALID_STATE;
-        if (BeginOutput() != ESP_OK) return ESP_FAIL;
+        if (StartSpeakerOutput() != ESP_OK) return ESP_FAIL;
 
         constexpr int kChunkSamples = 320;  // 20ms @ 16kHz
         int16_t chunk[kChunkSamples];
@@ -160,7 +162,7 @@ public:
 
     esp_err_t RecordAndLoopback(int duration_ms) override {
         if (!ready_ || duration_ms <= 0) return ESP_ERR_INVALID_STATE;
-        if (BeginOutput() != ESP_OK) return ESP_FAIL;
+        if (StartSpeakerOutput() != ESP_OK) return ESP_FAIL;
 
         const size_t total_samples = static_cast<size_t>((kAudioSampleRateHz * duration_ms) / 1000);
         const size_t total_bytes = total_samples * sizeof(int16_t);
@@ -214,14 +216,14 @@ public:
     }
 
     esp_err_t BeginOutput() override {
-        if (!ready_) return ESP_ERR_INVALID_STATE;
-        stop_requested_ = false;
-        return esp_codec_dev_set_out_mute(spk_dev_, false);
+        speech_output_.Reset();
+        return StartSpeakerOutput();
     }
 
     esp_err_t WritePcm(int16_t* samples, size_t count) override {
         if (!ready_ || stop_requested_) return ESP_ERR_INVALID_STATE;
-        return esp_codec_dev_write(spk_dev_, samples, count * sizeof(int16_t));
+        speech_output_.Process(samples, count);
+        return WriteSpeakerPcm(samples, count);
     }
 
     esp_err_t DrainOutput() override {
@@ -234,6 +236,17 @@ public:
     }
 
 private:
+    esp_err_t StartSpeakerOutput() {
+        if (!ready_) return ESP_ERR_INVALID_STATE;
+        stop_requested_ = false;
+        return esp_codec_dev_set_out_mute(spk_dev_, false);
+    }
+
+    esp_err_t WriteSpeakerPcm(int16_t* samples, size_t count) {
+        if (!ready_ || stop_requested_) return ESP_ERR_INVALID_STATE;
+        return esp_codec_dev_write(spk_dev_, samples, count * sizeof(int16_t));
+    }
+
     esp_err_t FlushDma(bool output) {
         // The BSP uses I2S_CHANNEL_DEFAULT_CONFIG and auto-clears transmitted
         // buffers. Transfer more than the entire DMA ring in wire samples.
@@ -242,13 +255,14 @@ private:
         size_t remaining = (dma.dma_desc_num + 1) * dma.dma_frame_num;
         while (remaining > 0) {
             const size_t n = std::min(remaining, sizeof(block) / sizeof(block[0]));
-            const esp_err_t err = output ? WritePcm(block, n) : ReadPcm(block, n);
+            const esp_err_t err = output ? WriteSpeakerPcm(block, n) : ReadPcm(block, n);
             if (err != ESP_OK) return err;
             remaining -= n;
         }
         return ESP_OK;
     }
 
+    WaveshareSpeechOutput speech_output_;
     esp_codec_dev_handle_t spk_dev_ = nullptr;
     esp_codec_dev_handle_t mic_dev_ = nullptr;
     bool ready_ = false;

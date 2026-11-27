@@ -10,6 +10,7 @@ extern "C" {
 #endif
 
 extern const lv_font_t font_zh_18;
+extern const lv_font_t font_practice_zh_16;
 
 #ifdef __cplusplus
 }

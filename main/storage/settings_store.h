@@ -4,20 +4,20 @@
 #include <string>
 #include <vector>
 
+#include "app/quick_controls.h"
 #include "esp_err.h"
+#include "net/saved_wifi.h"
 
 namespace agentsphere {
-
-struct WifiCredential {
-    std::string ssid;
-    std::string password;
-};
 
 class SettingsStore {
 public:
     static constexpr size_t kMaxSavedWifi = 5;
 
     esp_err_t Init();
+
+    QuickControls LoadQuickControls() const;
+    esp_err_t SaveQuickControls(const QuickControls& controls);
 
     std::vector<WifiCredential> LoadWifiList() const;
     esp_err_t SaveWifi(const std::string& ssid, const std::string& password);

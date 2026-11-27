@@ -8,6 +8,8 @@ using namespace agentsphere;
 
 int main() {
     using namespace std::string_view_literals;
+    assert(XiaoAnStatusText(DeviceState::Starting, Emotion::Neutral) == "正在启动"sv);
+    assert(XiaoAnStatusText(DeviceState::Starting, Emotion::Thinking) == "正在搜索网络..."sv);
     assert(XiaoAnStatusText(DeviceState::Idle, Emotion::Neutral) == nullptr);
     assert(XiaoAnStatusText(DeviceState::Idle, Emotion::Happy) == nullptr);
     assert(XiaoAnStatusText(DeviceState::Idle, Emotion::Confused) == "对话失败，请重试"sv);

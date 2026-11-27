@@ -1,6 +1,8 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -13,19 +15,17 @@
 
 namespace agentsphere {
 
-struct ScannedAp {
-    std::string ssid;
-    int8_t rssi = -100;
-    bool secured = true;
-};
-
 class WifiManager {
 public:
     esp_err_t Init(SettingsStore* store, QueueHandle_t event_queue);
 
-    // Attempts to connect to the highest-priority visible saved network.
-    // Returns ESP_ERR_NOT_FOUND if no saved Wi-Fi exists in NVS.
+    // Application-owned scan and fallback sequence. A new scan replaces the
+    // remaining candidates. ESP_ERR_NOT_FOUND on the scan means no saved Wi-Fi.
     esp_err_t ConnectSavedNetworks();
+    esp_err_t TryNextSavedNetwork();
+    void ClearSavedCandidates() { saved_candidates_.clear(); }
+    void CancelConnectionAttempt();
+    int attempt() const { return attempt_.load(); }
 
     // Connects STA to the specified network (optionally persists to NVS upon success).
     esp_err_t ConnectTo(const std::string& ssid, const std::string& password, bool save_on_success = true);
@@ -38,8 +38,7 @@ public:
     std::vector<ScannedAp> ScanNearbyAps();
 
     bool is_connected() const { return connected_; }
-    const std::string& current_ssid() const { return current_ssid_; }
-    const std::string& current_ip() const { return current_ip_; }
+    std::string current_ip() const;
     std::string GetSoftApSsid() const;
     std::string GetMacString() const;
 
@@ -54,13 +53,16 @@ private:
 
     bool initialized_ = false;
     bool softap_active_ = false;
-    bool connected_ = false;
+    std::atomic_bool connected_{false};
+    std::atomic<int> attempt_{0};
+    mutable std::mutex station_mutex_;
+    bool connecting_ = false;
     bool save_pending_ = false;
     int retry_count_ = 0;
 
     std::string target_ssid_;
     std::string target_password_;
-    std::string current_ssid_;
+    std::vector<WifiCredential> saved_candidates_;
     std::string current_ip_;
 };
 

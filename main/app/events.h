@@ -27,6 +27,8 @@ struct PowerStatus {
     bool available = false;
     bool usb_plugged = false;
     bool charging = false;
+    bool charge_complete = false;
+    bool battery_present = false;
     int battery_percent = -1;
     int battery_mv = 0;
 };
@@ -74,6 +76,13 @@ enum class AppEventType : uint8_t {
     BootstrapPairingCode,
     BootstrapError,
     VoiceChanged,
+    PracticeEnter,
+    PracticeRepeat,
+    PracticeExit,
+    DisplayActivity,
+    VolumeChanged,
+    BrightnessChanged,
+    MicrophoneMuteChanged,
 };
 
 struct AppEvent {

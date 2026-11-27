@@ -1,6 +1,7 @@
 #pragma once
 
 #include "app/events.h"
+#include "app/screen_idle.h"
 #include "app/state_machine.h"
 #include "esp_err.h"
 #include "freertos/FreeRTOS.h"
@@ -21,6 +22,8 @@ public:
 private:
     void HandleEvent(const AppEvent& ev);
     void HandleTick1Hz();
+    void SetScreenOn(bool on);
+    void UpdateQuickControls(const AppEvent& ev);
     void UpdateVoiceDisplay();
     void EnterProvisioning();
     void ExitProvisioningToState(DeviceState target_state, const char* status_text);
@@ -35,10 +38,15 @@ private:
     VoiceClient voice_;
     VoiceState displayed_voice_state_ = VoiceState::Disabled;
 
+    QuickControls quick_controls_;
+    ScreenIdleTimer screen_idle_;
     bool screen_on_ = true;
+    bool showing_pairing_ = false;
     uint32_t tick_count_ = 0;
     int emotion_reset_ticks_ = 0;
     int wifi_connect_timeout_ticks_ = 0;
+    int startup_wifi_grace_ticks_ = 0;
+    int startup_wifi_retry_ticks_ = 0;
     int offline_retry_ticks_ = 0;
     int pairing_remaining_sec_ = 0;
     char pairing_code_active_[16]{};

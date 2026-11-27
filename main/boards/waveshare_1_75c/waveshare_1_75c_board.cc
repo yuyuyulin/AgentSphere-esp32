@@ -13,6 +13,7 @@
 #include <sys/time.h>
 
 #include "boards/board.h"
+#include "boards/waveshare_1_75c/axp2101_power_status.h"
 #include "bsp/esp-bsp.h"
 #include "driver/gpio.h"
 #include "driver/i2c_master.h"
@@ -332,28 +333,21 @@ public:
     }
 
     PowerStatus ReadStatus() override {
-        PowerStatus st{};
-        if (!ready_) return st;
+        if (!ready_) return {};
+        uint8_t status[2]{};
+        if (I2cReadReg(dev_, 0x00, status, sizeof(status)) != ESP_OK) return {};
 
-        uint8_t stat1 = 0;
-        uint8_t stat2 = 0;
-        uint8_t vbat_raw[2] = {0, 0};
-        uint8_t soc = 0;
-
-        if (I2cReadReg(dev_, 0x00, &stat1, 1) != ESP_OK ||
-            I2cReadReg(dev_, 0x01, &stat2, 1) != ESP_OK) {
-            return st;
+        int percentage = -1;
+        int voltage_mv = 0;
+        if (Axp2101HasBattery(status[0])) {
+            uint8_t voltage[2]{};
+            if (I2cReadReg(dev_, 0x34, voltage, sizeof(voltage)) == ESP_OK) {
+                voltage_mv = (static_cast<int>(voltage[0] & 0x3FU) << 8) | voltage[1];
+            }
+            uint8_t gauge = 0;
+            if (I2cReadReg(dev_, 0xA4, &gauge, 1) == ESP_OK) percentage = gauge;
         }
-        I2cReadReg(dev_, 0x34, vbat_raw, 2);
-        I2cReadReg(dev_, 0xA4, &soc, 1);
-
-        st.available = true;
-        st.usb_plugged = (stat1 & 0x20) != 0;
-        const uint8_t chg_dir = (stat2 >> 5) & 0x03;
-        st.charging = (chg_dir == 0x01);
-        st.battery_mv = ((static_cast<int>(vbat_raw[0] & 0x3F) << 8) | vbat_raw[1]);
-        st.battery_percent = soc <= 100 ? static_cast<int>(soc) : -1;
-        return st;
+        return DecodeAxp2101PowerStatus(status[0], status[1], percentage, voltage_mv);
     }
 
     bool PollPowerButton(ButtonAction* out_action) {

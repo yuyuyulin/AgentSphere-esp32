@@ -35,7 +35,18 @@ public:
     bool TakeError() { return local_error_.exchange(false); }
 
 private:
-    enum class Command { None, Start, Finish, Abort, Flip, EnterPractice, RepeatPractice, ExitPractice };
+    enum class Command {
+        None,
+        Start,
+        Finish,
+        Abort,
+        Flip,
+        EnterPractice,
+        CheckPractice,
+        RepeatPractice,
+        ExitPractice,
+    };
+    enum class PracticeNotice { None, Offline, Unavailable };
     static void TaskEntry(void* arg);
     void Run();
     bool Serve();
@@ -69,8 +80,9 @@ private:
     std::string turn_, delivery_;
     PracticeScene practice_;
     std::string practice_caption_;  // Guarded by output_gate_.
+    PracticeNotice practice_notice_ = PracticeNotice::None;  // Guarded by output_gate_.
     std::atomic<bool> practice_capable_{false}, practice_active_{false}, practice_repeat_{false};
-    std::atomic<bool> practice_open_requested_{false};
+    std::atomic<bool> practice_open_requested_{false}, practice_check_pending_{false};
     bool opening_turn_ = false, recording_acknowledged_ = true;
     int64_t deadline_us_ = 0;
     bool accepting_audio_ = false, received_stop_ = false;

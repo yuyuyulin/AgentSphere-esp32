@@ -72,8 +72,12 @@ private:
     lv_obj_t* practice_enter_ = nullptr;
     lv_obj_t* practice_repeat_ = nullptr;
     lv_obj_t* practice_back_ = nullptr;
+    lv_obj_t* practice_back_label_ = nullptr;
     PracticeView practice_;
     bool practice_menu_ = false;
+    bool practice_shown_ = false;
+    bool practice_in_menu_ = true;
+    bool practice_active_layout_ = false;
     bool muted_ = false;
     PowerStatus power_;
     bool wifi_connected_ = false;

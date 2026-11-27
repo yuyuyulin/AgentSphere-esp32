@@ -172,8 +172,16 @@ private:
 void OldServer() {
     TestDevice test;
     test.Hello(false);
-    assert(test.client.GetPracticeView().page == PracticePage::Hidden);
-    assert(!test.client.EnterPractice());
+    // Screened devices keep the English practice entry swipeable even before server enablement.
+    assert(test.client.GetPracticeView().page == PracticePage::Available);
+    // Tapping the entry re-checks with the server and surfaces Unavailable when still disabled.
+    assert(test.client.EnterPractice());
+    WaitUntil([&] { return test.client.GetPracticeView().page == PracticePage::Checking; });
+    test.Hello(false);
+    assert(test.client.GetPracticeView().page == PracticePage::Unavailable);
+    // Closing the menu clears the notice and daily voice keeps working normally.
+    test.client.ExitPractice();
+    assert(test.client.GetPracticeView().page == PracticePage::Available);
     assert(test.client.Button());
     const auto start = test.network.Take("listen.start");
     assert(std::string_view(Field(start.get(), "scene_id")) == kDailyScene);
@@ -182,7 +190,30 @@ void OldServer() {
     assert(test.client.Button());
     const auto stop = test.network.Take("listen.stop");
     assert(!*Field(stop.get(), "practice_id"));
-    std::puts("PASS default voice with legacy server");
+    std::puts("PASS default voice + on-tap unavailable prompt with legacy server");
+}
+
+void DynamicEnableOnTap() {
+    TestDevice test;
+    test.Hello(false);
+    assert(test.client.GetPracticeView().page == PracticePage::Available);
+    assert(test.client.EnterPractice());
+    WaitUntil([&] { return test.client.GetPracticeView().page == PracticePage::Checking; });
+    // Server now advertises english_practice on fresh handshake -> auto-enters practice!
+    const auto hello = test.network.Take("hello");
+    assert(hello);
+    constexpr auto format = R"({"format":"opus","sample_rate":16000,"channels":1,"frame_duration_ms":60})";
+    test.network.Feed(1, std::string(R"({"type":"hello_ack","active_scene_id":"default","audio":{"uplink":)") +
+                      format + R"(,"downlink":)" + format +
+                      R"(},"scenes":[{"id":"default"},{"id":"english_practice"}]})");
+    const auto enter = test.network.Take("scene.enter");
+    const std::string request = Field(enter.get(), "request_id");
+    const std::string opening = Field(enter.get(), "turn_id");
+    assert(PracticeScene::ValidId(request) && PracticeScene::ValidId(opening));
+    test.network.Feed({{"type", "scene.ack"}, {"request_id", request}, {"active_scene_id", kEnglishScene},
+                       {"practice_id", kPracticeId}, {"turn_id", opening}}, "ok");
+    WaitUntil([&] { return test.client.GetPracticeView().page == PracticePage::Active; });
+    std::puts("PASS on-tap re-check auto-enters practice when server enabled");
 }
 
 void HeadlessServer() {
@@ -317,7 +348,7 @@ void RejectedEntryAndDisconnect() {
     WaitUntil([&] { return test.client.GetPracticeView().page == PracticePage::Offline; });
     assert(!test.audio.playing);
     test.Hello(false);
-    assert(test.client.GetPracticeView().page == PracticePage::Hidden);
+    assert(test.client.GetPracticeView().page == PracticePage::Available);
     std::puts("PASS rejected entry and disconnect stop audio and reset scene");
 }
 
@@ -383,6 +414,7 @@ bool OpusFrames::Decode(uint8_t*, unsigned) { return decoder_ != nullptr; }
 
 int main() {
     OldServer();
+    DynamicEnableOnTap();
     HeadlessServer();
     PracticeRoundTrip();
     RecoverFromMissingAcks();

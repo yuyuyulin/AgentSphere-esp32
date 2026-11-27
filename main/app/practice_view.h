@@ -4,7 +4,7 @@
 
 namespace agentsphere {
 
-enum class PracticePage { Hidden, Offline, Available, Entering, Active };
+enum class PracticePage { Hidden, Offline, Available, Checking, Unavailable, Entering, Active };
 
 struct PracticeView {
     PracticePage page = PracticePage::Hidden;

@@ -411,10 +411,17 @@ void Application::HandleEvent(const AppEvent& ev) {
             break;
         }
         case AppEventType::PracticeEnter:
+            screen_idle_.Reset();
+            if (!wifi_.is_connected() || voice_.state() == VoiceState::Disabled) {
+                if (display) display->SetPractice({PracticePage::Offline, false, {}});
+            } else {
+                voice_.EnterPractice();
+                UpdateVoiceDisplay();
+            }
+            break;
         case AppEventType::PracticeRepeat:
         case AppEventType::PracticeExit:
             screen_idle_.Reset();
-            if (ev.type == AppEventType::PracticeEnter) voice_.EnterPractice();
             if (ev.type == AppEventType::PracticeRepeat) voice_.RepeatPractice();
             if (ev.type == AppEventType::PracticeExit) voice_.ExitPractice();
             UpdateVoiceDisplay();

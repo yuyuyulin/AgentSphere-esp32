@@ -8,6 +8,8 @@ using namespace agentsphere;
 
 int main() {
     using namespace std::string_view_literals;
+    assert(XiaoAnStatusText(DeviceState::Starting, Emotion::Neutral) == "正在启动"sv);
+    assert(XiaoAnStatusText(DeviceState::Starting, Emotion::Thinking) == "正在搜索网络..."sv);
     assert(XiaoAnStatusText(DeviceState::Idle, Emotion::Neutral) == nullptr);
     assert(XiaoAnStatusText(DeviceState::Idle, Emotion::Happy) == nullptr);
     assert(XiaoAnStatusText(DeviceState::Idle, Emotion::Confused) == "对话失败，请重试"sv);
@@ -34,44 +36,50 @@ int main() {
     assert(!XiaoAnShowLowBattery(power));
 
     auto pose = GetXiaoAnPose(DeviceState::Idle, Emotion::Neutral, true, 0);
-    assert(pose.frame == XiaoAnFrame::Resting && pose.next_update_ms == 4200);
+    assert(pose.visible && !pose.eyes_closed && pose.mouth == XiaoAnMouth::Smile);
+    assert(pose.head_angle == 0 && pose.arm_angle == 0 && pose.next_update_ms == 4200);
     pose = GetXiaoAnPose(DeviceState::Offline, Emotion::Neutral, true, 4200);
-    assert(pose.frame == XiaoAnFrame::Blink && pose.next_update_ms == 130);
-    assert(GetXiaoAnPose(DeviceState::Offline, Emotion::Neutral, true, 4330).frame ==
-           XiaoAnFrame::Resting);
+    assert(pose.eyes_closed && pose.head_angle == 0 && pose.arm_angle == 0 && pose.next_update_ms == 130);
+    assert(!GetXiaoAnPose(DeviceState::Offline, Emotion::Neutral, true, 4330).eyes_closed);
+    assert(GetXiaoAnPose(DeviceState::Offline, Emotion::Dizzy, true, 0).eyes_closed);
 
-    assert(GetXiaoAnPose(DeviceState::Starting, Emotion::Neutral, true, 0).frame ==
-           XiaoAnFrame::Wave);
-    assert(GetXiaoAnPose(DeviceState::Starting, Emotion::Neutral, true, 900).frame ==
-           XiaoAnFrame::Resting);
-    assert(GetXiaoAnPose(DeviceState::Starting, Emotion::Thinking, true, 900).frame ==
-           XiaoAnFrame::Thoughtful);
-    pose = GetXiaoAnPose(DeviceState::Idle, Emotion::Happy, true, 0);
-    assert(pose.frame == XiaoAnFrame::Wave && pose.next_update_ms == 70);
-    assert(GetXiaoAnPose(DeviceState::Starting, Emotion::Neutral, true, 140).offset_y == 4);
-    assert(GetXiaoAnPose(DeviceState::Idle, Emotion::Happy, true, 350).offset_y == 0);
-    assert(GetXiaoAnPose(DeviceState::Idle, Emotion::Happy, true, 900).frame ==
-           XiaoAnFrame::Resting);
-    pose = GetXiaoAnPose(DeviceState::Offline, Emotion::Dizzy, true, 0);
-    assert(pose.frame == XiaoAnFrame::Blink && pose.next_update_ms == 160);
+    const auto start = GetXiaoAnPose(DeviceState::Idle, Emotion::Happy, true, 0);
+    const auto lift = GetXiaoAnPose(DeviceState::Idle, Emotion::Happy, true, 100);
+    const auto raised = GetXiaoAnPose(DeviceState::Idle, Emotion::Happy, true, 200);
+    const auto wiggle = GetXiaoAnPose(DeviceState::Idle, Emotion::Happy, true, 320);
+    const auto settled = GetXiaoAnPose(DeviceState::Idle, Emotion::Happy, true, 900);
+    assert(start.arm_angle == 0 && start.next_update_ms <= 60);
+    assert(lift.arm_angle < start.arm_angle && lift.arm_angle > raised.arm_angle);
+    assert(wiggle.arm_angle != raised.arm_angle && settled.arm_angle == 0);
+    assert(lift.head_angle == 0 && lift.mouth == XiaoAnMouth::Smile);
+    assert(GetXiaoAnPose(DeviceState::Starting, Emotion::Neutral, true, 200).arm_angle == raised.arm_angle);
 
-    assert(GetXiaoAnPose(DeviceState::Listening, Emotion::Happy, true, 0).frame ==
-           XiaoAnFrame::Attentive);
-    assert(GetXiaoAnPose(DeviceState::Thinking, Emotion::Happy, true, 0).frame ==
-           XiaoAnFrame::Thoughtful);
-    pose = GetXiaoAnPose(DeviceState::Speaking, Emotion::Happy, true, 0);
-    assert(pose.frame == XiaoAnFrame::Talking && pose.next_update_ms == 280);
-    assert(GetXiaoAnPose(DeviceState::Speaking, Emotion::Happy, true, 280).frame ==
-           XiaoAnFrame::Resting);
+    const auto interrupted = GetXiaoAnPose(DeviceState::Thinking, Emotion::Happy, true, 0, raised);
+    const auto returning = GetXiaoAnPose(DeviceState::Thinking, Emotion::Happy, true, 90, raised);
+    const auto thinking = GetXiaoAnPose(DeviceState::Thinking, Emotion::Happy, true, 180, raised);
+    assert(interrupted.arm_angle == raised.arm_angle && interrupted.head_angle == 0);
+    assert(returning.arm_angle > interrupted.arm_angle && returning.arm_angle < 0);
+    assert(thinking.arm_angle == 0 && thinking.head_angle < 0 && thinking.mouth == XiaoAnMouth::Thinking);
+    assert(thinking.next_update_ms == 0);
+    const auto center = GetXiaoAnPose(DeviceState::Idle, Emotion::Neutral, true, 90, thinking);
+    assert(center.head_angle > thinking.head_angle && center.head_angle < 0);
+    assert(GetXiaoAnPose(DeviceState::Idle, Emotion::Neutral, true, 180, thinking).head_angle == 0);
+    assert(GetXiaoAnPose(DeviceState::Listening, Emotion::Happy, true, 180).head_angle > 0);
 
-    assert(GetXiaoAnPose(DeviceState::Idle, Emotion::Happy, false, 0).frame ==
-           XiaoAnFrame::Hidden);
+    const auto speech_start = GetXiaoAnPose(DeviceState::Speaking, Emotion::Happy, true, 0);
+    const auto speech_open = GetXiaoAnPose(DeviceState::Speaking, Emotion::Happy, true, 120);
+    assert(speech_start.mouth == XiaoAnMouth::Speaking && speech_start.arm_angle == 0);
+    assert(speech_open.mouth == speech_start.mouth && speech_open.mouth_scale_y > speech_start.mouth_scale_y);
+    assert(speech_open.head_angle == speech_start.head_angle && speech_open.next_update_ms <= 60);
+
+    pose = GetXiaoAnPose(DeviceState::Idle, Emotion::Happy, false, 50, raised);
+    assert(!pose.visible && pose.next_update_ms == 0);
     const DeviceState system_views[] = {
         DeviceState::WifiConfiguring, DeviceState::Activating,
         DeviceState::Upgrading, DeviceState::Sleeping,
     };
     for (const auto state : system_views) {
-        pose = GetXiaoAnPose(state, Emotion::Happy, true, 0);
-        assert(pose.frame == XiaoAnFrame::Hidden && pose.next_update_ms == 0);
+        pose = GetXiaoAnPose(state, Emotion::Happy, true, 50, raised);
+        assert(!pose.visible && pose.next_update_ms == 0);
     }
 }

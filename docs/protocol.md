@@ -216,6 +216,8 @@ WSS 连接建立后 10 秒内，设备必须发送 `hello` 完成参数协商，
 
 ### 3.3 上行控制信令（ESP32 → AgentSphere）
 
+有屏固件通过 `hello.features` 可选数组声明 `english_practice`、`captions_v1` 和 `practice_bilingual_v1`。服务端通过 `hello_ack.scenes` 宣告场景后可进入练习。练习增加 `scene.repeat`，按 `practice_id` 和 `turn_id` 过滤旧帧。开场、重听和退出详见[固件实现](english-practice.md)及 [AgentSphere PR #62](https://github.com/yuyuyulin/AgentSphere/pull/62)。日常语音沿用 v1。
+
 | `type` | 触发时机 | 关键字段 | 说明 |
 | --- | --- | --- | --- |
 | `hello` | WSS 建连后首帧 | `protocol_version`, `fw_version`, `audio`, `active_scene_id` | 协商 Opus 参数与同步状态 |
@@ -255,11 +257,13 @@ WSS 连接建立后 10 秒内，设备必须发送 `hello` 完成参数协商，
 | `hello_ack` | 收到 `hello` 后 | `connection_id`, `server_time_ms`, `audio`, `scenes`, `active_scene_id` | 校时、更新场景菜单、置为在线就绪 |
 | `listen.ack` | 服务端确认受理本轮请求 | `turn_id`, `accepted` | 记录已受理，防止异常重复提交 |
 | `asr.result` | （可选）ASR 识别出文本 | `turn_id`, `text` | 可记录调试日志或供后续字幕扩展 |
-| `tts.start` | 准备下发本轮回复语音流 | `delivery_id`, `turn_id`, `scene_id`, `emotion`?, `text`? | 校验 `turn_id` 与当前场景；匹配则切换 `Speaking` 态与对应表情，随后接收 Binary Opus 帧边收边播 |
+| `tts.start` | 准备下发本轮回复语音流 | `delivery_id`, `turn_id`, `scene_id`, `emotion`?, `text`?, `text_zh`? | 校验 `turn_id` 与当前场景；匹配则切换 `Speaking` 态与对应表情，随后接收 Binary Opus 帧边收边播 |
 | `tts.stop` | 本轮语音流发送完毕或被服务端中止 | `delivery_id`, `turn_id`, `reason` (`completed`\|`cancelled`) | 等待本地播放队列播完后切入追问 `Listening` 窗口（或回 `Idle`），回传 `delivery.ack` |
 | `scene.ack` | 确认场景切换完成 | `active_scene_id`, `ok` | 更新端侧场景标识与主题色 |
 | `error` | 请求或运行期错误 | `code`, `message`, `turn_id`?, `retryable` | 映射端侧友好提示音/图标并恢复 `Idle` |
 | `device.unbound` | 用户在 Web 端主动解绑该设备 | `reason` | 断开 WSS、清除 NVS 中的 `device_token`、切回 `Activating` |
+
+当服务端确认 `hello_ack.features.practice_bilingual_v1: true` 时，同一练习回复的 `tts.start` 可在英文 `text` 之外附带简体中文 `text_zh`。同一帧带当前 `practice_id` 和 `turn_id`。每段字幕最多 1024 UTF-8 字节，双语帧最多 4096 字节。默认显示英文，翻译按钮本地展开中文，无需上行消息。日常场景和未协商的连接沿用原帧。
 
 #### 下行 `tts.start` 示例
 

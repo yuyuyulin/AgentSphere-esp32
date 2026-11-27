@@ -3,6 +3,8 @@
 #include <cstdint>
 
 #include "app/events.h"
+#include "app/practice_view.h"
+#include "app/quick_controls.h"
 #include "app/state_machine.h"
 #include "esp_err.h"
 
@@ -23,6 +25,8 @@ public:
                                         const RtcTime& rtc,
                                         const TouchPoint& touch,
                                         const char* last_event) = 0;
+    virtual void SetPractice(const PracticeView&) {}
+    virtual void SetQuickControls(const QuickControls&) {}
     virtual void SetBrightness(uint8_t percent) = 0;
     virtual void SetScreenOn(bool on) = 0;
 };

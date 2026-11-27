@@ -1,5 +1,6 @@
 #include "app/application.h"
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -7,6 +8,7 @@
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_timer.h"
 #include "nvs_flash.h"
 #include "sdkconfig.h"
 #include "ui/display.h"
@@ -17,6 +19,8 @@ namespace {
 constexpr const char* kTag = "App";
 constexpr uint32_t kEventQueueLen = 32;
 constexpr int kWifiConnectTimeoutSec = 18;
+constexpr int kStartupWifiGraceSec = 20;
+constexpr int kStartupWifiRetryDelaySec = 3;
 constexpr int kOfflineRetryIntervalSec = 30;
 }  // namespace
 
@@ -33,6 +37,8 @@ esp_err_t Application::Init() {
     }
 
     ESP_ERROR_CHECK(settings_.Init());
+    quick_controls_ = settings_.LoadQuickControls();
+    voice_.SetMicrophoneMuted(quick_controls_.muted);
 
     event_queue_ = xQueueCreate(kEventQueueLen, sizeof(AppEvent));
     if (!event_queue_) {
@@ -43,7 +49,8 @@ esp_err_t Application::Init() {
     Board& board = Board::GetInstance();
     ESP_LOGI(kTag, "Booting board: %s", board.GetBoardName());
 
-    sm_.SetObserver([](DeviceState /*old_state*/, DeviceState new_state) {
+    sm_.SetObserver([this](DeviceState old_state, DeviceState new_state) {
+        screen_idle_.StateChanged(old_state, new_state, showing_pairing_);
         if (auto* display = Board::GetInstance().GetDisplay()) {
             display->SetState(new_state);
         }
@@ -58,8 +65,12 @@ esp_err_t Application::Init() {
     // Mark running OTA image valid only after board initialization succeeds.
     esp_ota_mark_app_valid_cancel_rollback();
 
+    if (auto* display = board.GetDisplay()) {
+        display->SetBrightness(quick_controls_.brightness);
+        display->SetQuickControls(quick_controls_);
+    }
     if (auto* audio = board.GetAudioCodec(); audio && audio->IsReady()) {
-        audio->SetOutputVolume(95);
+        audio->SetOutputVolume(quick_controls_.volume);
         audio->PlayTone(880, 140);
         audio->PlayTone(1175, 160);
     }
@@ -69,14 +80,23 @@ esp_err_t Application::Init() {
 
     // Startup Wi-Fi policy:
     // - First boot (no saved Wi-Fi): enter SoftAP provisioning immediately.
-    // - Subsequent boot: scan and connect highest-priority saved Wi-Fi with 18s timeout.
-    if (wifi_.ConnectSavedNetworks() == ESP_ERR_NOT_FOUND) {
+    // - Subsequent boot: show "正在搜索网络..." immediately (before blocking scan),
+    //   then search and retry within kStartupWifiGraceSec before entering Offline.
+    if (auto* display = board.GetDisplay()) {
+        display->SetState(DeviceState::Starting, "正在搜索网络...");
+        display->SetEmotion(Emotion::Thinking);
+    }
+    const auto wifi_start = wifi_.ConnectSavedNetworks();
+    if (wifi_start == ESP_ERR_NOT_FOUND) {
         EnterProvisioning();
     } else {
-        wifi_connect_timeout_ticks_ = kWifiConnectTimeoutSec;
-        if (auto* display = board.GetDisplay()) {
-            display->SetState(DeviceState::Starting, "连接 Wi-Fi 中...");
-            display->SetEmotion(Emotion::Thinking);
+        startup_wifi_grace_ticks_ = kStartupWifiGraceSec;
+        if (wifi_start == ESP_OK) {
+            wifi_connect_timeout_ticks_ = kWifiConnectTimeoutSec;
+        } else {
+            startup_wifi_retry_ticks_ = kStartupWifiRetryDelaySec;
+            ESP_LOGW(kTag, "Initial saved Wi-Fi start failed (%s), retrying in %ds",
+                     esp_err_to_name(wifi_start), kStartupWifiRetryDelaySec);
         }
     }
 
@@ -101,14 +121,55 @@ void Application::Run() {
     }
 }
 
+void Application::SetScreenOn(bool on) {
+    screen_idle_.Reset();
+    if (screen_on_ == on) return;
+    screen_on_ = on;
+    if (auto* display = Board::GetInstance().GetDisplay()) display->SetScreenOn(on);
+}
+
+void Application::UpdateQuickControls(const AppEvent& ev) {
+    screen_idle_.Reset();
+    Board& board = Board::GetInstance();
+    auto* display = board.GetDisplay();
+    const uint32_t previous = quick_controls_.Encode();
+    switch (ev.type) {
+        case AppEventType::VolumeChanged:
+            quick_controls_.volume = std::clamp(ev.value, 0, 100);
+            if (auto* audio = board.GetAudioCodec(); audio && audio->IsReady()) {
+                audio->SetOutputVolume(quick_controls_.volume);
+            }
+            break;
+        case AppEventType::BrightnessChanged:
+            quick_controls_.brightness = QuickControls::ClampBrightness(ev.value);
+            if (display) display->SetBrightness(quick_controls_.brightness);
+            break;
+        case AppEventType::MicrophoneMuteChanged:
+            quick_controls_.muted = ev.value != 0;
+            voice_.SetMicrophoneMuted(quick_controls_.muted);
+            break;
+        default:
+            return;
+    }
+    if (display) display->SetQuickControls(quick_controls_);
+    if (quick_controls_.Encode() != previous) {
+        const auto err = settings_.SaveQuickControls(quick_controls_);
+        if (err != ESP_OK) ESP_LOGW(kTag, "Could not save quick controls: %s", esp_err_to_name(err));
+    }
+}
+
 void Application::EnterProvisioning() {
+    SetScreenOn(true);
     voice_.Stop();
     displayed_voice_state_ = VoiceState::Disabled;
     bootstrap_.Stop();
     wifi_connect_timeout_ticks_ = 0;
+    startup_wifi_grace_ticks_ = 0;
+    startup_wifi_retry_ticks_ = 0;
     offline_retry_ticks_ = 0;
     pairing_remaining_sec_ = 0;
     pairing_code_active_[0] = '\0';
+    showing_pairing_ = false;
     sm_.TransitionTo(DeviceState::WifiConfiguring);
 
     if (provisioning_.Start(&wifi_, &settings_, event_queue_) == ESP_OK) {
@@ -142,9 +203,13 @@ void Application::HandleEvent(const AppEvent& ev) {
 
     switch (ev.type) {
         case AppEventType::WifiConnected: {
+            if (ev.value != wifi_.attempt() || !wifi_.is_connected()) break;
+            wifi_.ClearSavedCandidates();
             voice_.Stop();
             displayed_voice_state_ = VoiceState::Disabled;
             wifi_connect_timeout_ticks_ = 0;
+            startup_wifi_grace_ticks_ = 0;
+            startup_wifi_retry_ticks_ = 0;
             offline_retry_ticks_ = 0;
             std::snprintf(last_event_text_, sizeof(last_event_text_), "Wi-Fi: %s", ev.ssid);
             if (display) {
@@ -164,6 +229,7 @@ void Application::HandleEvent(const AppEvent& ev) {
             break;
         }
         case AppEventType::BootstrapBound: {
+            showing_pairing_ = false;
             pairing_remaining_sec_ = 0;
             pairing_code_active_[0] = '\0';
             std::snprintf(last_event_text_, sizeof(last_event_text_), "%s", ev.text);
@@ -182,7 +248,7 @@ void Application::HandleEvent(const AppEvent& ev) {
             if (!bootstrap_.ws_url().empty()) {
                 std::string uid, token;
                 if (settings_.LoadDeviceCredentials(&uid, &token) &&
-                    !voice_.Start(audio, event_queue_, bootstrap_.ws_url(), uid, token)) {
+                    !voice_.Start(audio, event_queue_, bootstrap_.ws_url(), uid, token, board.GetCapabilities().has_screen)) {
                     ESP_LOGW(kTag, "Voice client could not start");
                 }
             }
@@ -192,6 +258,8 @@ void Application::HandleEvent(const AppEvent& ev) {
             UpdateVoiceDisplay();
             break;
         case AppEventType::BootstrapPairingCode: {
+            showing_pairing_ = true;
+            SetScreenOn(true);
             std::snprintf(last_event_text_, sizeof(last_event_text_), "配对码: %s", ev.pairing_code);
             std::snprintf(pairing_code_active_, sizeof(pairing_code_active_), "%s", ev.pairing_code);
             if (ev.value > 0) {
@@ -220,6 +288,7 @@ void Application::HandleEvent(const AppEvent& ev) {
             break;
         }
         case AppEventType::PairingRefreshRequested: {
+            showing_pairing_ = true;
             pairing_remaining_sec_ = 0;
             pairing_code_active_[0] = '\0';
             std::snprintf(last_event_text_, sizeof(last_event_text_), "正在刷新配对码...");
@@ -232,7 +301,25 @@ void Application::HandleEvent(const AppEvent& ev) {
         }
         case AppEventType::WifiDisconnected:
         case AppEventType::WifiConnectTimeout: {
+            if (ev.value != wifi_.attempt() || wifi_.is_connected()) break;
             wifi_connect_timeout_ticks_ = 0;
+            wifi_.CancelConnectionAttempt();
+            if (wifi_.is_connected()) break;
+            showing_pairing_ = false;
+            if (ev.type == AppEventType::WifiConnectTimeout &&
+                sm_.state() != DeviceState::WifiConfiguring && wifi_.TryNextSavedNetwork() == ESP_OK) {
+                wifi_connect_timeout_ticks_ = kWifiConnectTimeoutSec;
+                break;
+            }
+            if (ev.type == AppEventType::WifiConnectTimeout &&
+                sm_.state() == DeviceState::Starting && startup_wifi_grace_ticks_ > 0) {
+                startup_wifi_retry_ticks_ = kStartupWifiRetryDelaySec;
+                ESP_LOGI(kTag, "Startup Wi-Fi search still in grace window (%ds left), retrying in %ds",
+                         startup_wifi_grace_ticks_, kStartupWifiRetryDelaySec);
+                break;
+            }
+            startup_wifi_grace_ticks_ = 0;
+            startup_wifi_retry_ticks_ = 0;
             pairing_remaining_sec_ = 0;
             pairing_code_active_[0] = '\0';
             if (sm_.state() == DeviceState::WifiConfiguring) {
@@ -250,7 +337,7 @@ void Application::HandleEvent(const AppEvent& ev) {
                 display->SetState(DeviceState::Offline, "长按 BOOT 配网");
                 display->SetEmotion(Emotion::Confused);
             }
-            offline_retry_ticks_ = kOfflineRetryIntervalSec;
+            offline_retry_ticks_ = ev.type == AppEventType::WifiDisconnected ? 1 : kOfflineRetryIntervalSec;
             break;
         }
         case AppEventType::ProvisioningConnectRequested: {
@@ -259,6 +346,8 @@ void Application::HandleEvent(const AppEvent& ev) {
             break;
         }
         case AppEventType::ProvisioningSkipped: {
+            wifi_connect_timeout_ticks_ = 0;
+            wifi_.CancelConnectionAttempt();
             std::snprintf(last_event_text_, sizeof(last_event_text_), "已切换离线模式");
             if (display) {
                 display->SetWifiStatus(false, nullptr, nullptr);
@@ -269,15 +358,13 @@ void Application::HandleEvent(const AppEvent& ev) {
             break;
         }
         case AppEventType::Button: {
+            screen_idle_.Reset();
             if (ev.button_id == ButtonId::Power) {
                 if (ev.button_action == ButtonAction::ShortPress) {
-                    screen_on_ = !screen_on_;
+                    SetScreenOn(!screen_on_);
                     std::snprintf(last_event_text_, sizeof(last_event_text_), "电源键 -> %s",
                                   screen_on_ ? "亮屏" : "息屏");
                     ESP_LOGI(kTag, "PWR short -> %s", screen_on_ ? "Screen ON" : "Screen OFF");
-                    if (display) {
-                        display->SetScreenOn(screen_on_);
-                    }
                 } else if (ev.button_action == ButtonAction::LongPress) {
                     std::snprintf(last_event_text_, sizeof(last_event_text_), "电源键长按 -> 关机");
                     ESP_LOGW(kTag, "PWR long -> PowerOff");
@@ -287,12 +374,7 @@ void Application::HandleEvent(const AppEvent& ev) {
                 }
             } else if (ev.button_id == ButtonId::Boot) {
                 if (ev.button_action == ButtonAction::ShortPress) {
-                    if (!screen_on_) {
-                        screen_on_ = true;
-                        if (display) {
-                            display->SetScreenOn(true);
-                        }
-                    }
+                    SetScreenOn(true);
                     if (sm_.state() == DeviceState::WifiConfiguring) {
                         // Short press BOOT during provisioning skips to offline mode
                         AppEvent skip_ev{};
@@ -321,6 +403,7 @@ void Application::HandleEvent(const AppEvent& ev) {
                         }
                         break;
                     }
+                    if (quick_controls_.muted || board.GetCapabilities().has_screen) break;
                     std::snprintf(last_event_text_, sizeof(last_event_text_), "BOOT -> 录音回放测试");
                     ESP_LOGI(kTag, "BOOT short press: triggering 2s audio loopback self-test");
                     if (display) {
@@ -345,9 +428,34 @@ void Application::HandleEvent(const AppEvent& ev) {
             }
             break;
         }
+        case AppEventType::PracticeEnter:
+            screen_idle_.Reset();
+            if (!wifi_.is_connected() || voice_.state() == VoiceState::Disabled) {
+                if (display) display->SetPractice({PracticePage::Offline, false, {}});
+            } else {
+                voice_.EnterPractice();
+                UpdateVoiceDisplay();
+            }
+            break;
+        case AppEventType::PracticeRepeat:
+        case AppEventType::PracticeExit:
+            screen_idle_.Reset();
+            if (ev.type == AppEventType::PracticeRepeat) voice_.RepeatPractice();
+            if (ev.type == AppEventType::PracticeExit) voice_.ExitPractice();
+            UpdateVoiceDisplay();
+            break;
+        case AppEventType::DisplayActivity:
+            if (screen_on_) screen_idle_.Reset();
+            break;
+        case AppEventType::VolumeChanged:
+        case AppEventType::BrightnessChanged:
+        case AppEventType::MicrophoneMuteChanged:
+            UpdateQuickControls(ev);
+            break;
         case AppEventType::Touch: {
             last_touch_ = ev.touch;
-            if (ev.touch.pressed) {
+            if (ev.touch.pressed && screen_on_) {
+                screen_idle_.Reset();
                 std::snprintf(last_event_text_, sizeof(last_event_text_), "触摸 (%d,%d)",
                               ev.touch.x, ev.touch.y);
                 if (display) {
@@ -373,18 +481,12 @@ void Application::HandleEvent(const AppEvent& ev) {
                 } else if (audio && audio->IsReady()) {
                     audio->StopOutput();
                 }
-                screen_on_ = false;
-                if (display) {
-                    display->SetScreenOn(false);
-                }
+                SetScreenOn(false);
             } else if (ev.imu_gesture == ImuGesture::PickUp || ev.imu_gesture == ImuGesture::FaceUp) {
                 if (!screen_on_) {
-                    screen_on_ = true;
+                    SetScreenOn(true);
                     std::snprintf(last_event_text_, sizeof(last_event_text_), "抬起唤醒屏幕");
                     ESP_LOGI(kTag, "IMU: Wake Screen");
-                    if (display) {
-                        display->SetScreenOn(true);
-                    }
                 }
             }
             break;
@@ -411,6 +513,7 @@ void Application::HandleEvent(const AppEvent& ev) {
 void Application::UpdateVoiceDisplay() {
     const VoiceState state = voice_.state();
     const bool error = voice_.TakeError();
+    if (auto* display = Board::GetInstance().GetDisplay()) display->SetPractice(voice_.GetPracticeView());
     if (state == displayed_voice_state_ && !error) return;
     displayed_voice_state_ = state;
     if (!wifi_.is_connected() || sm_.state() == DeviceState::WifiConfiguring) return;
@@ -450,11 +553,15 @@ void Application::UpdateVoiceDisplay() {
         case VoiceState::Listening:
             sm_.TransitionTo(DeviceState::Listening);
             break;
+        case VoiceState::EnteringPractice:
         case VoiceState::Thinking:
             sm_.TransitionTo(DeviceState::Thinking);
             break;
         case VoiceState::Speaking:
             sm_.TransitionTo(DeviceState::Speaking);
+            break;
+        case VoiceState::ExitingPractice:
+            sm_.TransitionTo(DeviceState::Idle);
             break;
         case VoiceState::Disabled:
             break;
@@ -494,7 +601,30 @@ void Application::HandleTick1Hz() {
         if (wifi_connect_timeout_ticks_ == 0 && !wifi_.is_connected()) {
             AppEvent ev{};
             ev.type = AppEventType::WifiConnectTimeout;
+            ev.value = wifi_.attempt();
             HandleEvent(ev);
+        }
+    }
+
+    if (sm_.state() == DeviceState::Starting && !wifi_.is_connected() && startup_wifi_grace_ticks_ > 0) {
+        --startup_wifi_grace_ticks_;
+        if (startup_wifi_grace_ticks_ == 0) {
+            startup_wifi_retry_ticks_ = 0;
+            if (wifi_connect_timeout_ticks_ == 0) {
+                AppEvent ev{};
+                ev.type = AppEventType::WifiConnectTimeout;
+                ev.value = wifi_.attempt();
+                HandleEvent(ev);
+            }
+        } else if (startup_wifi_retry_ticks_ > 0) {
+            --startup_wifi_retry_ticks_;
+            if (startup_wifi_retry_ticks_ == 0) {
+                if (wifi_.ConnectSavedNetworks() == ESP_OK) {
+                    wifi_connect_timeout_ticks_ = std::min(kWifiConnectTimeoutSec, std::max(startup_wifi_grace_ticks_, 5));
+                } else {
+                    startup_wifi_retry_ticks_ = kStartupWifiRetryDelaySec;
+                }
+            }
         }
     }
 
@@ -535,17 +665,23 @@ void Application::HandleTick1Hz() {
     }
 
     if (auto* display = board.GetDisplay()) {
+        if (screen_idle_.ShouldBlank(esp_timer_get_time(), screen_on_, sm_.state(), showing_pairing_)) {
+            ESP_LOGI(kTag, "Display idle timeout; screen off");
+            SetScreenOn(false);
+        }
         display->SetPowerStatus(power);
         display->SetDiagnosticTelemetry(imu, rtc, last_touch_, last_event_text_);
     }
 
     if ((tick_count_ % 10) == 0) {
         ESP_LOGI(kTag,
-                 "Telemetry | state=%s wifi=%d(%s) | pwr(usb=%d chg=%d soc=%d%% %dmV) | imu(%d: %.2f,%.2f,%.2f)",
+                 "Telemetry | state=%s wifi=%d(%s) | pwr(usb=%d chg=%d soc=%d%% %dmV) "
+                 "| battery(present=%d done=%d) | imu(%d: %.2f,%.2f,%.2f)",
                  DeviceStateToString(sm_.state()),
                  wifi_.is_connected(),
                  wifi_.is_connected() ? wifi_.current_ip().c_str() : "offline",
                  power.usb_plugged, power.charging, power.battery_percent, power.battery_mv,
+                 power.battery_present, power.charge_complete,
                  imu.valid, imu.ax, imu.ay, imu.az);
         LogMemoryWatermarks();
     }

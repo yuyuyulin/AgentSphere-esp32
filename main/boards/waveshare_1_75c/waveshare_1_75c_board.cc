@@ -218,16 +218,39 @@ public:
 
     esp_err_t BeginOutput() override {
         speech_output_.Reset();
+        speech_samples_ = 0;
+        speech_in_sq_sum_ = 0.0;
+        speech_out_sq_sum_ = 0.0;
+        speech_in_peak_ = 0;
+        speech_out_peak_ = 0;
         return StartSpeakerOutput();
     }
 
     esp_err_t WritePcm(int16_t* samples, size_t count) override {
         if (!ready_ || stop_requested_) return ESP_ERR_INVALID_STATE;
+        for (size_t i = 0; i < count; ++i) {
+            const int32_t v = samples[i] < 0 ? -static_cast<int32_t>(samples[i]) : static_cast<int32_t>(samples[i]);
+            if (v > speech_in_peak_) speech_in_peak_ = v;
+            speech_in_sq_sum_ += static_cast<double>(v) * static_cast<double>(v);
+        }
         speech_output_.Process(samples, count);
+        for (size_t i = 0; i < count; ++i) {
+            const int32_t v = samples[i] < 0 ? -static_cast<int32_t>(samples[i]) : static_cast<int32_t>(samples[i]);
+            if (v > speech_out_peak_) speech_out_peak_ = v;
+            speech_out_sq_sum_ += static_cast<double>(v) * static_cast<double>(v);
+        }
+        speech_samples_ += count;
         return WriteSpeakerPcm(samples, count);
     }
 
     esp_err_t DrainOutput() override {
+        if (speech_samples_ > 0) {
+            const double in_rms = std::sqrt(speech_in_sq_sum_ / static_cast<double>(speech_samples_));
+            const double out_rms = std::sqrt(speech_out_sq_sum_ / static_cast<double>(speech_samples_));
+            ESP_LOGI(kTag, "Speech output stats: samples=%u in(rms=%.0f peak=%ld) -> out(rms=%.0f peak=%ld)",
+                     static_cast<unsigned>(speech_samples_), in_rms, static_cast<long>(speech_in_peak_),
+                     out_rms, static_cast<long>(speech_out_peak_));
+        }
         return FlushDma(true);
     }
 
@@ -264,6 +287,11 @@ private:
     }
 
     WaveshareSpeechOutput speech_output_;
+    size_t speech_samples_ = 0;
+    double speech_in_sq_sum_ = 0.0;
+    double speech_out_sq_sum_ = 0.0;
+    int32_t speech_in_peak_ = 0;
+    int32_t speech_out_peak_ = 0;
     esp_codec_dev_handle_t spk_dev_ = nullptr;
     esp_codec_dev_handle_t mic_dev_ = nullptr;
     bool ready_ = false;

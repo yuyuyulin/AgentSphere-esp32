@@ -21,7 +21,8 @@ constexpr int64_t kSecond = 1000000;
 constexpr int64_t kConnectTimeoutSec = 18;
 constexpr int64_t kHelloTimeoutSec = 10;
 constexpr int64_t kSceneTimeoutUs = 10 * kSecond;
-constexpr size_t kCaptionBytes = 240;
+constexpr size_t kCaptionBytes = 1024;
+constexpr char kBilingualFeature[] = "practice_bilingual_v1";
 // The 60 ms Opus encoder exceeded 16 KiB on the 1.75C.
 // Keep its stack in PSRAM so Wi-Fi and DMA can use internal RAM.
 constexpr uint32_t kVoiceStackBytes = 40 * 1024;
@@ -238,7 +239,8 @@ PracticeView VoiceClient::GetPracticeView() {
     if (practice_check_pending_) return {PracticePage::Checking, false, {}};
     if (practice_open_requested_) {
         if (!practice_active_) return {PracticePage::Entering, false, {}};
-        return {PracticePage::Active, practice_repeat_ && state == VoiceState::Ready, practice_caption_};
+        return {PracticePage::Active, practice_repeat_ && state == VoiceState::Ready,
+                practice_caption_, practice_caption_zh_, practice_caption_revision_};
     }
     if (state == VoiceState::Disabled || state == VoiceState::Connecting) {
         return {PracticePage::Offline, false, {}};
@@ -329,6 +331,7 @@ bool VoiceClient::Serve() {
         auto* features = cJSON_AddArrayToObject(hello.get(), "features");
         cJSON_AddItemToArray(features, cJSON_CreateString(kEnglishScene));
         cJSON_AddItemToArray(features, cJSON_CreateString("captions_v1"));
+        cJSON_AddItemToArray(features, cJSON_CreateString(kBilingualFeature));
     }
     auto* fmt = cJSON_AddObjectToObject(hello.get(), "audio");
     cJSON_AddStringToObject(fmt, "format", "opus");
@@ -445,7 +448,7 @@ void VoiceClient::FinishRecording(const char* reason) {
 void VoiceClient::EndTurn() {
     turn_.clear();
     delivery_.clear();
-    opening_turn_ = false;
+    opening_turn_ = replay_turn_ = false;
     recording_acknowledged_ = true;
     accepting_audio_ = received_stop_ = false;
     if (state_ == VoiceState::Speaking) audio_->StopOutput();
@@ -485,6 +488,7 @@ void VoiceClient::BeginPractice() {
 }
 
 void VoiceClient::BeginRepeat() {
+    replay_turn_ = true;
     turn_ = NewTurn();
     deadline_us_ = esp_timer_get_time() + 75 * kSecond;
     SetState(VoiceState::Thinking);
@@ -510,6 +514,7 @@ void VoiceClient::ResetPractice() {
     practice_.Reset();
     practice_active_ = practice_repeat_ = practice_open_requested_ = false;
     practice_caption_.clear();
+    practice_caption_zh_.clear();
 }
 
 void VoiceClient::SendScene(const char* type, const std::string& turn) {
@@ -599,6 +604,9 @@ void VoiceClient::HandleControl(const cJSON* obj) {
         }
         negotiated_ = true;
         practice_capable_ = has_practice_ui_ && AdvertisesEnglish(obj);
+        const auto* features = cJSON_GetObjectItemCaseSensitive(obj, "features");
+        bilingual_captions_ = practice_capable_ &&
+            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(features, kBilingualFeature));
         reconnect_now_ = false;
         ESP_LOGI(kTag, "Voice WSS ready (hello_ack), English practice=%s",
                  practice_capable_ ? "available" : "unavailable");
@@ -656,6 +664,8 @@ void VoiceClient::HandleControl(const cJSON* obj) {
         }
         if (practice_.phase() == PracticePhase::Active) {
             practice_caption_ = BoundedCaption(Field(obj, "text"));
+            practice_caption_zh_ = bilingual_captions_ ? BoundedCaption(Field(obj, "text_zh")) : "";
+            if (!replay_turn_) ++practice_caption_revision_;
         }
         delivery_ = delivery;
         frame_count_ = 0;

@@ -79,14 +79,17 @@ private:
     std::string url_, headers_;
     std::string turn_, delivery_;
     PracticeScene practice_;
-    std::string practice_caption_;  // Guarded by output_gate_.
+    // The display reads caption text and revision together under output_gate_.
+    std::string practice_caption_, practice_caption_zh_;
+    uint32_t practice_caption_revision_ = 0;
     PracticeNotice practice_notice_ = PracticeNotice::None;  // Guarded by output_gate_.
     std::atomic<bool> practice_capable_{false}, practice_active_{false}, practice_repeat_{false};
     std::atomic<bool> practice_open_requested_{false}, practice_check_pending_{false};
-    bool opening_turn_ = false, recording_acknowledged_ = true;
+    bool opening_turn_ = false, replay_turn_ = false, recording_acknowledged_ = true;
     int64_t deadline_us_ = 0;
     bool accepting_audio_ = false, received_stop_ = false;
     unsigned frame_count_ = 0;
+    bool bilingual_captions_ = false;
     bool link_error_ = false, negotiated_ = false, has_practice_ui_ = false;
     std::atomic<bool> stop_{false}, local_error_{false}, reconnect_now_{false};
     std::atomic<VoiceState> state_{VoiceState::Disabled};

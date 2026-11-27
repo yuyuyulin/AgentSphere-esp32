@@ -119,13 +119,14 @@ public:
         wire = nullptr;
     }
 
-    void Hello(bool english) {
+    void Hello(bool english, bool bilingual = false) {
         const auto hello = network.Take("hello");
         const auto* features = cJSON_GetObjectItemCaseSensitive(hello.get(), "features");
         if (has_practice_ui_) {
-            assert(cJSON_IsArray(features) && cJSON_GetArraySize(features) == 2);
+            assert(cJSON_IsArray(features) && cJSON_GetArraySize(features) == 3);
             assert(std::string_view(cJSON_GetStringValue(cJSON_GetArrayItem(features, 0))) == kEnglishScene);
             assert(std::string_view(cJSON_GetStringValue(cJSON_GetArrayItem(features, 1))) == "captions_v1");
+            assert(std::string_view(cJSON_GetStringValue(cJSON_GetArrayItem(features, 2))) == "practice_bilingual_v1");
         } else {
             assert(!features);
         }
@@ -133,14 +134,16 @@ public:
         const std::string scenes = english ? R"([{"id":"default"},{"id":"english_practice"}])" :
                                              R"([{"id":"default"}])";
         network.Feed(1, std::string(R"({"type":"hello_ack","active_scene_id":"default","audio":{"uplink":)") +
-                     format + R"(,"downlink":)" + format + R"(},"scenes":)" + scenes + "}");
+                     format + R"(,"downlink":)" + format + R"(},"scenes":)" + scenes +
+                     (bilingual ? R"(,"features":{"captions_v1":true,"practice_bilingual_v1":true})" : "") + "}");
         WaitUntil([&] { return client.state() == VoiceState::Ready; });
     }
 
-    void StartReply(const std::string& tid, const char* session = kPracticeId) {
+    void StartReply(const std::string& tid, const char* session = kPracticeId,
+                    std::string english = "What flavor do you like?", std::string chinese = {}) {
         network.Feed({{"type", "tts.start"}, {"scene_id", kEnglishScene}, {"turn_id", tid},
                       {"practice_id", session}, {"delivery_id", "fixture-delivery"},
-                      {"text", "What flavor do you like?"}});
+                      {"text", english}, {"text_zh", chinese}});
     }
 
     void FinishReply(const std::string& tid) {
@@ -228,7 +231,7 @@ void HeadlessServer() {
 
 void PracticeRoundTrip() {
     TestDevice test;
-    test.Hello(true);
+    test.Hello(true, true);
     assert(test.client.GetPracticeView().page == PracticePage::Available);
     std::string request, opening;
     test.Enter(request, opening);
@@ -239,9 +242,12 @@ void PracticeRoundTrip() {
     assert(test.audio.starts == 0);
     test.network.Feed({{"type", "scene.ack"}, {"request_id", request}, {"active_scene_id", kEnglishScene},
                        {"practice_id", kPracticeId}, {"turn_id", opening}}, "ok");
-    test.StartReply(opening);
+    const std::string long_english = std::string(400, 'x') + " What flavor do you like?";
+    test.StartReply(opening, kPracticeId, long_english, "你喜欢什么口味的冰淇淋？");
     test.FinishReply(opening);
-    assert(test.client.GetPracticeView().caption == "What flavor do you like?");
+    const auto initial_caption = test.client.GetPracticeView();
+    assert(initial_caption.caption == long_english);
+    assert(test.client.GetPracticeView().caption_zh == "你喜欢什么口味的冰淇淋？");
     assert(test.network.sent_pcm == 0);
 
     assert(test.client.RepeatPractice());
@@ -249,8 +255,9 @@ void PracticeRoundTrip() {
     const std::string replay = Field(repeat.get(), "turn_id");
     assert(replay != opening);
     assert(std::string_view(Field(repeat.get(), "practice_id")) == kPracticeId);
-    test.StartReply(replay);
+    test.StartReply(replay, kPracticeId, long_english, "你喜欢什么口味的冰淇淋？");
     test.FinishReply(replay);
+    assert(test.client.GetPracticeView().SameCaption(initial_caption));
 
     test.client.SetMicrophoneMuted(true);
     assert(!test.client.Button());
@@ -274,8 +281,12 @@ void PracticeRoundTrip() {
     const auto wrong = test.network.Take("delivery.ack");
     assert(std::string_view(Field(wrong.get(), "status")) == "aborted");
     assert(std::string_view(Field(wrong.get(), "practice_id")) == kOldPracticeId);
-    test.StartReply(answer);
+    test.StartReply(answer, kPracticeId, long_english);
     test.FinishReply(answer);
+    const auto new_caption = test.client.GetPracticeView();
+    assert(new_caption.caption == initial_caption.caption);
+    assert(new_caption.caption_revision != initial_caption.caption_revision);
+    assert(new_caption.caption_zh.empty());
 
     assert(test.client.Button());
     const auto next = test.network.Take("listen.start");

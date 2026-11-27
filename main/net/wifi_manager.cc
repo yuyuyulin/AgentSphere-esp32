@@ -243,9 +243,11 @@ void WifiManager::OnWifiEvent(void* arg,
 
     self->connected_ = false;
     self->current_ip_.clear();
-    const int direct_retries = self->softap_active_ ? kMaxDirectRetries : 0;
-    if (!was_connected && self->retry_count_ < direct_retries) {
+    if (!was_connected && self->retry_count_ < kMaxDirectRetries) {
         ++self->retry_count_;
+        ESP_LOGW(kTag, "STA disconnected during connect (reason=%d), retry %d/%d",
+                 event ? static_cast<int>(event->reason) : -1,
+                 self->retry_count_, kMaxDirectRetries);
         if (esp_wifi_connect() == ESP_OK) return;
     }
 

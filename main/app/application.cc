@@ -19,6 +19,8 @@ namespace {
 constexpr const char* kTag = "App";
 constexpr uint32_t kEventQueueLen = 32;
 constexpr int kWifiConnectTimeoutSec = 18;
+constexpr int kStartupWifiGraceSec = 20;
+constexpr int kStartupWifiRetryDelaySec = 3;
 constexpr int kOfflineRetryIntervalSec = 30;
 }  // namespace
 
@@ -78,20 +80,23 @@ esp_err_t Application::Init() {
 
     // Startup Wi-Fi policy:
     // - First boot (no saved Wi-Fi): enter SoftAP provisioning immediately.
-    // - Subsequent boot: scan once, then try saved Wi-Fi candidates in order.
+    // - Subsequent boot: show "正在搜索网络..." immediately (before blocking scan),
+    //   then search and retry within kStartupWifiGraceSec before entering Offline.
+    if (auto* display = board.GetDisplay()) {
+        display->SetState(DeviceState::Starting, "正在搜索网络...");
+        display->SetEmotion(Emotion::Thinking);
+    }
     const auto wifi_start = wifi_.ConnectSavedNetworks();
     if (wifi_start == ESP_ERR_NOT_FOUND) {
         EnterProvisioning();
-    } else if (wifi_start != ESP_OK) {
-        AppEvent failed{};
-        failed.type = AppEventType::WifiConnectTimeout;
-        failed.value = wifi_.attempt();
-        HandleEvent(failed);
     } else {
-        wifi_connect_timeout_ticks_ = kWifiConnectTimeoutSec;
-        if (auto* display = board.GetDisplay()) {
-            display->SetState(DeviceState::Starting, "连接 Wi-Fi 中...");
-            display->SetEmotion(Emotion::Thinking);
+        startup_wifi_grace_ticks_ = kStartupWifiGraceSec;
+        if (wifi_start == ESP_OK) {
+            wifi_connect_timeout_ticks_ = kWifiConnectTimeoutSec;
+        } else {
+            startup_wifi_retry_ticks_ = kStartupWifiRetryDelaySec;
+            ESP_LOGW(kTag, "Initial saved Wi-Fi start failed (%s), retrying in %ds",
+                     esp_err_to_name(wifi_start), kStartupWifiRetryDelaySec);
         }
     }
 
@@ -159,6 +164,8 @@ void Application::EnterProvisioning() {
     displayed_voice_state_ = VoiceState::Disabled;
     bootstrap_.Stop();
     wifi_connect_timeout_ticks_ = 0;
+    startup_wifi_grace_ticks_ = 0;
+    startup_wifi_retry_ticks_ = 0;
     offline_retry_ticks_ = 0;
     pairing_remaining_sec_ = 0;
     pairing_code_active_[0] = '\0';
@@ -201,6 +208,8 @@ void Application::HandleEvent(const AppEvent& ev) {
             voice_.Stop();
             displayed_voice_state_ = VoiceState::Disabled;
             wifi_connect_timeout_ticks_ = 0;
+            startup_wifi_grace_ticks_ = 0;
+            startup_wifi_retry_ticks_ = 0;
             offline_retry_ticks_ = 0;
             std::snprintf(last_event_text_, sizeof(last_event_text_), "Wi-Fi: %s", ev.ssid);
             if (display) {
@@ -239,7 +248,7 @@ void Application::HandleEvent(const AppEvent& ev) {
             if (!bootstrap_.ws_url().empty()) {
                 std::string uid, token;
                 if (settings_.LoadDeviceCredentials(&uid, &token) &&
-                    !voice_.Start(audio, event_queue_, bootstrap_.ws_url(), uid, token)) {
+                    !voice_.Start(audio, event_queue_, bootstrap_.ws_url(), uid, token, board.GetCapabilities().has_screen)) {
                     ESP_LOGW(kTag, "Voice client could not start");
                 }
             }
@@ -302,6 +311,15 @@ void Application::HandleEvent(const AppEvent& ev) {
                 wifi_connect_timeout_ticks_ = kWifiConnectTimeoutSec;
                 break;
             }
+            if (ev.type == AppEventType::WifiConnectTimeout &&
+                sm_.state() == DeviceState::Starting && startup_wifi_grace_ticks_ > 0) {
+                startup_wifi_retry_ticks_ = kStartupWifiRetryDelaySec;
+                ESP_LOGI(kTag, "Startup Wi-Fi search still in grace window (%ds left), retrying in %ds",
+                         startup_wifi_grace_ticks_, kStartupWifiRetryDelaySec);
+                break;
+            }
+            startup_wifi_grace_ticks_ = 0;
+            startup_wifi_retry_ticks_ = 0;
             pairing_remaining_sec_ = 0;
             pairing_code_active_[0] = '\0';
             if (sm_.state() == DeviceState::WifiConfiguring) {
@@ -410,6 +428,22 @@ void Application::HandleEvent(const AppEvent& ev) {
             }
             break;
         }
+        case AppEventType::PracticeEnter:
+            screen_idle_.Reset();
+            if (!wifi_.is_connected() || voice_.state() == VoiceState::Disabled) {
+                if (display) display->SetPractice({PracticePage::Offline, false, {}});
+            } else {
+                voice_.EnterPractice();
+                UpdateVoiceDisplay();
+            }
+            break;
+        case AppEventType::PracticeRepeat:
+        case AppEventType::PracticeExit:
+            screen_idle_.Reset();
+            if (ev.type == AppEventType::PracticeRepeat) voice_.RepeatPractice();
+            if (ev.type == AppEventType::PracticeExit) voice_.ExitPractice();
+            UpdateVoiceDisplay();
+            break;
         case AppEventType::DisplayActivity:
             if (screen_on_) screen_idle_.Reset();
             break;
@@ -479,6 +513,7 @@ void Application::HandleEvent(const AppEvent& ev) {
 void Application::UpdateVoiceDisplay() {
     const VoiceState state = voice_.state();
     const bool error = voice_.TakeError();
+    if (auto* display = Board::GetInstance().GetDisplay()) display->SetPractice(voice_.GetPracticeView());
     if (state == displayed_voice_state_ && !error) return;
     displayed_voice_state_ = state;
     if (!wifi_.is_connected() || sm_.state() == DeviceState::WifiConfiguring) return;
@@ -518,11 +553,15 @@ void Application::UpdateVoiceDisplay() {
         case VoiceState::Listening:
             sm_.TransitionTo(DeviceState::Listening);
             break;
+        case VoiceState::EnteringPractice:
         case VoiceState::Thinking:
             sm_.TransitionTo(DeviceState::Thinking);
             break;
         case VoiceState::Speaking:
             sm_.TransitionTo(DeviceState::Speaking);
+            break;
+        case VoiceState::ExitingPractice:
+            sm_.TransitionTo(DeviceState::Idle);
             break;
         case VoiceState::Disabled:
             break;
@@ -564,6 +603,28 @@ void Application::HandleTick1Hz() {
             ev.type = AppEventType::WifiConnectTimeout;
             ev.value = wifi_.attempt();
             HandleEvent(ev);
+        }
+    }
+
+    if (sm_.state() == DeviceState::Starting && !wifi_.is_connected() && startup_wifi_grace_ticks_ > 0) {
+        --startup_wifi_grace_ticks_;
+        if (startup_wifi_grace_ticks_ == 0) {
+            startup_wifi_retry_ticks_ = 0;
+            if (wifi_connect_timeout_ticks_ == 0) {
+                AppEvent ev{};
+                ev.type = AppEventType::WifiConnectTimeout;
+                ev.value = wifi_.attempt();
+                HandleEvent(ev);
+            }
+        } else if (startup_wifi_retry_ticks_ > 0) {
+            --startup_wifi_retry_ticks_;
+            if (startup_wifi_retry_ticks_ == 0) {
+                if (wifi_.ConnectSavedNetworks() == ESP_OK) {
+                    wifi_connect_timeout_ticks_ = std::min(kWifiConnectTimeoutSec, std::max(startup_wifi_grace_ticks_, 5));
+                } else {
+                    startup_wifi_retry_ticks_ = kStartupWifiRetryDelaySec;
+                }
+            }
         }
     }
 

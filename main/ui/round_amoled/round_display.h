@@ -23,6 +23,7 @@ public:
     void SetEmotion(Emotion emotion) override;
     void SetPowerStatus(const PowerStatus& power) override;
     void SetWifiStatus(bool connected, const char*, const char*) override;
+    void SetPractice(const PracticeView& practice) override;
     void SetQuickControls(const QuickControls& controls) override;
     void ShowProvisioning(const char* ap_ssid, const char* ip_addr) override;
     void ShowPairingCode(const char* code, const char* hint = nullptr) override;
@@ -35,6 +36,9 @@ private:
     static void OnHomeTouch(lv_event_t* e);
     static void OnQuickPanelGesture(lv_event_t* e);
     static void OnQuickControl(lv_event_t* e);
+    static void OnPracticeAction(lv_event_t* e);
+    static void OnCaptionScroll(lv_event_t* e);
+    static void OnCaptionTimer(lv_timer_t* timer);
     static void OnSkipProvisioningClicked(lv_event_t* e);
     static void OnRefreshPairingClicked(lv_event_t* e);
     void CreateQuickPanel(lv_obj_t* parent);
@@ -42,6 +46,11 @@ private:
     void UpdateQuickStatus();
     void PostQuickEvent(AppEventType type, int value = 0);
     void UpdatePromptVisibility();
+    void CreatePracticePanel(lv_obj_t* parent);
+    void UpdatePracticeCaption(bool reset_scroll);
+    void UpdateCaptionTimer();
+    void RefreshVisibility();
+    const char* PracticeStatus() const;
     void ApplyBrightnessLocked();
 
     QueueHandle_t event_queue_ = nullptr;
@@ -61,6 +70,27 @@ private:
     lv_obj_t* quick_volume_ = nullptr;
     lv_obj_t* quick_brightness_ = nullptr;
     lv_obj_t* quick_mic_ = nullptr;
+    lv_obj_t* practice_panel_ = nullptr;
+    lv_obj_t* practice_status_ = nullptr;
+    lv_obj_t* practice_caption_view_ = nullptr;
+    lv_obj_t* practice_caption_ = nullptr;
+    lv_timer_t* caption_timer_ = nullptr;
+    uint32_t caption_start_tick_ = 0;
+    bool caption_manual_scroll_ = false;
+    bool caption_translation_visible_ = false;
+    lv_obj_t* practice_enter_ = nullptr;
+    lv_obj_t* practice_repeat_ = nullptr;
+    lv_obj_t* practice_translate_ = nullptr;
+    lv_obj_t* practice_translate_label_ = nullptr;
+    lv_obj_t* practice_back_ = nullptr;
+    lv_obj_t* practice_back_label_ = nullptr;
+    PracticeView practice_;
+    bool practice_menu_ = false;
+    bool practice_shown_ = false;
+    bool practice_in_menu_ = true;
+    bool practice_active_layout_ = false;
+    bool practice_translation_layout_ = false;
+    bool muted_ = false;
     PowerStatus power_;
     bool wifi_connected_ = false;
     lv_obj_t* prov_panel_ = nullptr;

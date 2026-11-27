@@ -2,6 +2,7 @@
 
 #if CONFIG_AS_ENABLE_LVGL
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -16,6 +17,9 @@ namespace agentsphere {
 namespace {
 constexpr const char* kTag = "RoundDisplay";
 constexpr uint32_t kLockTimeoutMs = 100;
+constexpr uint32_t kCaptionScrollIntervalMs = 100;
+constexpr uint32_t kCaptionScrollDelayMs = 1500;
+constexpr int32_t kCaptionScrollStep = 2;
 
 bool IsAsciiOnly(const char* s) {
     if (!s) return true;
@@ -162,6 +166,7 @@ esp_err_t RoundAmoledDisplay::Init() {
 
     lv_obj_set_hidden(pair_panel_, true);
     CreateQuickPanel(scr);
+    CreatePracticePanel(scr);
 
     bsp_display_unlock();
 
@@ -257,7 +262,7 @@ void RoundAmoledDisplay::OnHomeTouch(lv_event_t* e) {
     auto* indev = lv_indev_active();
     const auto code = lv_event_get_code(e);
     if (!indev || code == LV_EVENT_PRESS_LOST || !self->requested_screen_on_.load() ||
-        self->overlay_active_ || self->quick_visible_) {
+        self->overlay_active_ || self->quick_visible_ || !lv_obj_is_hidden(self->practice_panel_)) {
         self->home_press_active_ = false;
         return;
     }
@@ -280,6 +285,21 @@ void RoundAmoledDisplay::OnHomeTouch(lv_event_t* e) {
         self->SetQuickPanelVisible(true);
         self->PostQuickEvent(AppEventType::DisplayActivity);
         ESP_LOGI(kTag, "Quick controls opened by downward swipe");
+        return;
+    }
+
+    if (OpensEnglishMenu(start.x, start.y, pt.x, pt.y)) {
+        self->home_press_active_ = false;
+        if (code == LV_EVENT_PRESSING) lv_indev_wait_release(indev);
+        self->practice_menu_ = true;
+        self->RefreshVisibility();
+        self->PostQuickEvent(AppEventType::DisplayActivity);
+        lv_mem_monitor_t mon{};
+        lv_mem_monitor(&mon);
+        ESP_LOGI(kTag, "English practice menu opened by left swipe (lv_mem free=%u/%u used=%u%%)",
+                 static_cast<unsigned>(mon.free_size),
+                 static_cast<unsigned>(mon.total_size),
+                 static_cast<unsigned>(mon.used_pct));
         return;
     }
 
@@ -328,8 +348,274 @@ void RoundAmoledDisplay::SetQuickPanelVisible(bool visible) {
     quick_visible_ = visible;
     if (visible) UpdateQuickStatus();
     lv_obj_set_hidden(quick_panel_, !visible);
-    theme_.SetScreenVisible(requested_screen_on_.load() && !visible);
+    RefreshVisibility();
+}
+
+void RoundAmoledDisplay::CreatePracticePanel(lv_obj_t* parent) {
+    practice_panel_ = lv_obj_create(parent);
+    lv_obj_set_size(practice_panel_, 466, 466);
+    lv_obj_center(practice_panel_);
+    lv_obj_set_style_radius(practice_panel_, 0, 0);
+    lv_obj_set_style_border_width(practice_panel_, 0, 0);
+    lv_obj_set_style_pad_all(practice_panel_, 0, 0);
+    lv_obj_set_style_bg_color(practice_panel_, lv_color_hex(0x0D191D), 0);
+    lv_obj_set_style_bg_opa(practice_panel_, LV_OPA_COVER, 0);
+    lv_obj_set_scrollable(practice_panel_, false);
+
+    auto label = [this](const char* text, int y) {
+        auto* obj = lv_label_create(practice_panel_);
+        lv_label_set_text_static(obj, text);
+        lv_obj_set_style_text_align(obj, LV_TEXT_ALIGN_CENTER, 0);
+        lv_obj_set_style_text_color(obj, lv_color_hex(0xE4F3EE), 0);
+        lv_obj_align(obj, LV_ALIGN_TOP_MID, 0, y);
+        return obj;
+    };
+    label("英语练习", 56);
+    practice_status_ = label("", 248);
+    lv_obj_set_width(practice_status_, 312);
+    lv_obj_set_style_text_line_space(practice_status_, 4, 0);
+    practice_caption_view_ = lv_obj_create(practice_panel_);
+    lv_obj_remove_style_all(practice_caption_view_);
+    lv_obj_set_size(practice_caption_view_, 310, 178);
+    lv_obj_align(practice_caption_view_, LV_ALIGN_TOP_MID, 0, 151);
+    lv_obj_set_scrollable(practice_caption_view_, true);
+    lv_obj_set_scroll_dir(practice_caption_view_, LV_DIR_VER);
+    lv_obj_set_scroll_chain_hor(practice_caption_view_, false);
+    lv_obj_set_scroll_chain_ver(practice_caption_view_, false);
+    lv_obj_set_scroll_elastic(practice_caption_view_, false);
+    lv_obj_set_scrollbar_mode(practice_caption_view_, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_width(practice_caption_view_, 3, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_color(practice_caption_view_, lv_color_hex(0x79B4A5), LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(practice_caption_view_, LV_OPA_60, LV_PART_SCROLLBAR);
+    lv_obj_add_event_cb(practice_caption_view_, &RoundAmoledDisplay::OnCaptionScroll,
+                        LV_EVENT_SCROLL_BEGIN, this);
+
+    practice_caption_ = lv_label_create(practice_caption_view_);
+    lv_obj_set_width(practice_caption_, 284);
+    lv_obj_set_style_text_font(practice_caption_, &font_practice_zh_16, 0);
+    lv_obj_set_style_text_color(practice_caption_, lv_color_hex(0xE4F3EE), 0);
+    lv_obj_set_style_text_line_space(practice_caption_, 4, 0);
+    lv_obj_align(practice_caption_, LV_ALIGN_TOP_MID, 0, 0);
+    lv_label_set_text_static(practice_caption_, "");
+    caption_timer_ = lv_timer_create(&RoundAmoledDisplay::OnCaptionTimer, kCaptionScrollIntervalMs, this);
+    if (caption_timer_) lv_timer_pause(caption_timer_);
+
+    // Prominent English learning icon card ("ABC" + "开始练习") shown on left swipe.
+    // Disable default LVGL button shadows to keep CO5300 partial flushes crisp and avoid extra shadow buffers.
+    practice_enter_ = lv_button_create(practice_panel_);
+    lv_obj_set_size(practice_enter_, 160, 116);
+    lv_obj_align(practice_enter_, LV_ALIGN_TOP_MID, 0, 108);
+    lv_obj_set_style_radius(practice_enter_, 24, 0);
+    lv_obj_set_style_pad_all(practice_enter_, 0, 0);
+    lv_obj_set_style_shadow_width(practice_enter_, 0, 0);
+    lv_obj_set_style_outline_width(practice_enter_, 0, 0);
+    lv_obj_set_style_bg_opa(practice_enter_, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(practice_enter_, lv_color_hex(0x184742), 0);
+    lv_obj_set_style_bg_color(practice_enter_, lv_color_hex(0x25655D), LV_STATE_PRESSED);
+    lv_obj_set_style_border_width(practice_enter_, 2, 0);
+    lv_obj_set_style_border_color(practice_enter_, lv_color_hex(0x6AD5AC), 0);
+    lv_obj_add_event_cb(practice_enter_, &RoundAmoledDisplay::OnPracticeAction, LV_EVENT_CLICKED, this);
+
+    auto* icon_abc = lv_label_create(practice_enter_);
+    lv_label_set_text_static(icon_abc, "ABC");
+    lv_obj_set_style_text_color(icon_abc, lv_color_hex(0xFFFFFF), 0);
+#if LV_FONT_MONTSERRAT_28
+    lv_obj_set_style_text_font(icon_abc, &lv_font_montserrat_28, 0);
+#endif
+    lv_obj_set_style_text_letter_space(icon_abc, 4, 0);
+    lv_obj_align(icon_abc, LV_ALIGN_CENTER, 0, -16);
+
+    auto* enter_text = lv_label_create(practice_enter_);
+    lv_label_set_text_static(enter_text, "开始练习");
+    lv_obj_set_style_text_color(enter_text, lv_color_hex(0xD6F5EB), 0);
+    lv_obj_align(enter_text, LV_ALIGN_CENTER, 0, 26);
+
+    auto button = [this](const char* name, int width, int x, lv_obj_t** out_label = nullptr) {
+        auto* obj = lv_button_create(practice_panel_);
+        lv_obj_set_size(obj, width, 48);
+        lv_obj_align(obj, LV_ALIGN_BOTTOM_MID, x, -64);
+        lv_obj_set_style_radius(obj, 24, 0);
+        lv_obj_set_style_pad_all(obj, 0, 0);
+        lv_obj_set_style_shadow_width(obj, 0, 0);
+        lv_obj_set_style_outline_width(obj, 0, 0);
+        lv_obj_set_style_border_width(obj, 0, 0);
+        lv_obj_set_style_bg_opa(obj, LV_OPA_COVER, 0);
+        lv_obj_set_style_bg_color(obj, lv_color_hex(0x254C46), 0);
+        lv_obj_add_event_cb(obj, &RoundAmoledDisplay::OnPracticeAction, LV_EVENT_CLICKED, this);
+        auto* text = lv_label_create(obj);
+        lv_label_set_text_static(text, name);
+        lv_obj_center(text);
+        if (out_label) *out_label = text;
+        return obj;
+    };
+    practice_repeat_ = button("重听", 116, -68);
+    practice_translate_ = button("翻译", 86, 0, &practice_translate_label_);
+    practice_back_ = button("返回", 116, 0, &practice_back_label_);
+    lv_obj_set_hidden(practice_panel_, true);
+}
+
+void RoundAmoledDisplay::OnPracticeAction(lv_event_t* e) {
+    auto* self = static_cast<RoundAmoledDisplay*>(lv_event_get_user_data(e));
+    auto* target = lv_event_get_target(e);
+    if (target == self->practice_enter_) {
+        ESP_LOGI(kTag, "English practice icon tapped");
+        self->PostQuickEvent(AppEventType::PracticeEnter);
+    } else if (target == self->practice_repeat_) {
+        self->PostQuickEvent(AppEventType::PracticeRepeat);
+    } else if (target == self->practice_translate_) {
+        self->caption_translation_visible_ = !self->caption_translation_visible_;
+        self->UpdatePracticeCaption(false);
+        self->PostQuickEvent(AppEventType::DisplayActivity);
+    } else {
+        self->practice_menu_ = false;
+        self->RefreshVisibility();
+        self->PostQuickEvent(AppEventType::PracticeExit);
+    }
+}
+
+void RoundAmoledDisplay::OnCaptionScroll(lv_event_t* e) {
+    auto* self = static_cast<RoundAmoledDisplay*>(lv_event_get_user_data(e));
+    auto* indev = lv_indev_active();
+    if (indev && lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER &&
+        lv_indev_get_scroll_obj(indev) == self->practice_caption_view_) {
+        self->caption_manual_scroll_ = true;
+        self->UpdateCaptionTimer();
+        self->PostQuickEvent(AppEventType::DisplayActivity);
+    }
+}
+
+void RoundAmoledDisplay::OnCaptionTimer(lv_timer_t* timer) {
+    auto* self = static_cast<RoundAmoledDisplay*>(lv_timer_get_user_data(timer));
+    if (lv_tick_elaps(self->caption_start_tick_) < kCaptionScrollDelayMs) return;
+    auto* view = self->practice_caption_view_;
+    const int32_t remaining = lv_obj_get_scroll_bottom(view);
+    if (remaining <= 0) {
+        lv_timer_pause(timer);
+        return;
+    }
+    lv_obj_scroll_by(view, 0, -std::min(kCaptionScrollStep, remaining), LV_ANIM_OFF);
+}
+
+void RoundAmoledDisplay::UpdateCaptionTimer() {
+    if (!caption_timer_) return;
+    if (practice_shown_ && practice_.page == PracticePage::Active && !practice_.caption.empty() &&
+        !caption_manual_scroll_) {
+        lv_timer_resume(caption_timer_);
+    } else {
+        lv_timer_pause(caption_timer_);
+    }
+}
+
+void RoundAmoledDisplay::UpdatePracticeCaption(bool reset_scroll) {
+    const int32_t previous_scroll = reset_scroll ? 0 : lv_obj_get_scroll_y(practice_caption_view_);
+    if (reset_scroll) {
+        caption_translation_visible_ = false;
+        caption_manual_scroll_ = false;
+    }
+    caption_start_tick_ = lv_tick_get();
+    if (caption_translation_visible_) {
+        const auto text = practice_.caption + "\n\n" + practice_.caption_zh;
+        lv_label_set_text(practice_caption_, text.c_str());
+    } else {
+        lv_label_set_text(practice_caption_, practice_.caption.c_str());
+    }
+    lv_label_set_text_static(practice_translate_label_, caption_translation_visible_ ? "收起" : "翻译");
+    lv_obj_update_layout(practice_caption_view_);
+    lv_obj_scroll_to_y(practice_caption_view_, previous_scroll, LV_ANIM_OFF);
+    UpdateCaptionTimer();
+}
+
+const char* RoundAmoledDisplay::PracticeStatus() const {
+    if (practice_.page == PracticePage::Offline) return "联网后再试";
+    if (practice_.page == PracticePage::Checking) return "正在检查...";
+    if (practice_.page == PracticePage::Unavailable) return "未开启，请先在网页端开启";
+    if (practice_.page == PracticePage::Entering) return "正在进入...";
+    if (practice_.page != PracticePage::Active) return "";
+    switch (state_) {
+        case DeviceState::Listening: return "正在聆听...";
+        case DeviceState::Thinking: return "正在思考...";
+        case DeviceState::Speaking: return "正在播报...";
+        default:
+            if (emotion_ == Emotion::Confused) return "对话失败，请重试";
+            return muted_ ? "已闭麦" : "按 BOOT 回答";
+    }
+}
+
+void RoundAmoledDisplay::RefreshVisibility() {
+    const bool on = requested_screen_on_.load();
+    const bool busy_or_active = practice_.page == PracticePage::Checking ||
+                                practice_.page == PracticePage::Entering ||
+                                practice_.page == PracticePage::Active;
+    const bool show = on && !overlay_active_ && !quick_visible_ && (practice_menu_ || busy_or_active);
+    const bool in_menu = !busy_or_active;
+    const bool is_active = practice_.page == PracticePage::Active;
+    const bool can_translate = is_active && !practice_.caption.empty() && !practice_.caption_zh.empty();
+    const bool layout_changed = (show != practice_shown_) ||
+                                (show && (in_menu != practice_in_menu_ || is_active != practice_active_layout_ ||
+                                          can_translate != practice_translation_layout_));
+    practice_shown_ = show;
+    if (show) {
+        practice_in_menu_ = in_menu;
+        practice_active_layout_ = is_active;
+        practice_translation_layout_ = can_translate;
+    }
+
+    lv_obj_set_hidden(practice_panel_, !show);
+    if (show) {
+        const char* status = PracticeStatus();
+        if (std::strcmp(lv_label_get_text(practice_status_), status) != 0) {
+            lv_label_set_text_static(practice_status_, status);
+        }
+        if (layout_changed) {
+            lv_obj_align(practice_status_, LV_ALIGN_TOP_MID, 0, in_menu ? 248 : 106);
+        }
+        const lv_color_t status_color = lv_color_hex(
+            practice_.page == PracticePage::Unavailable || practice_.page == PracticePage::Offline
+                ? 0xFFD49A
+                : 0xE4F3EE);
+        if (!lv_color_eq(lv_obj_get_style_text_color(practice_status_, LV_PART_MAIN), status_color)) {
+            lv_obj_set_style_text_color(practice_status_, status_color, 0);
+        }
+        lv_obj_set_hidden(practice_caption_view_, !is_active || practice_.caption.empty());
+        lv_obj_set_hidden(practice_translate_, !can_translate);
+        lv_obj_set_hidden(practice_enter_, !in_menu);
+        lv_obj_set_hidden(practice_repeat_, practice_.page != PracticePage::Active);
+        lv_obj_set_state(practice_repeat_, LV_STATE_DISABLED, !practice_.can_repeat);
+        if (practice_back_label_) {
+            const char* back_text = in_menu ? "返回" : "退出";
+            if (std::strcmp(lv_label_get_text(practice_back_label_), back_text) != 0) {
+                lv_label_set_text_static(practice_back_label_, back_text);
+            }
+        }
+        if (layout_changed) {
+            const int width = can_translate ? 86 : 116;
+            lv_obj_set_width(practice_repeat_, width);
+            lv_obj_set_width(practice_back_, width);
+            const int offset = can_translate ? 97 : 68;
+            lv_obj_align(practice_repeat_, LV_ALIGN_BOTTOM_MID, -offset, -64);
+            lv_obj_align(practice_back_, LV_ALIGN_BOTTOM_MID, is_active ? offset : 0, -64);
+        }
+    }
+    if (layout_changed) {
+        lv_obj_invalidate(lv_screen_active());
+        UpdateCaptionTimer();
+    }
+    theme_.SetScreenVisible(on && !quick_visible_ && !show);
     UpdatePromptVisibility();
+}
+
+void RoundAmoledDisplay::SetPractice(const PracticeView& practice) {
+    if (!initialized_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) return;
+    if (!(practice_ == practice)) {
+        if (practice_.page == PracticePage::Active && practice.page != PracticePage::Active) {
+            practice_menu_ = false;
+        }
+        const bool caption_changed = !practice_.SameCaption(practice);
+        practice_ = practice;
+        RefreshVisibility();
+        if (caption_changed) UpdatePracticeCaption(true);
+    }
+    bsp_display_unlock();
 }
 
 void RoundAmoledDisplay::UpdateQuickStatus() {
@@ -353,6 +639,7 @@ void RoundAmoledDisplay::UpdateQuickStatus() {
 
 void RoundAmoledDisplay::SetQuickControls(const QuickControls& controls) {
     if (!initialized_ || bsp_display_lock(kLockTimeoutMs) != ESP_OK) return;
+    muted_ = controls.muted;
     lv_slider_set_value(quick_volume_, controls.volume, LV_ANIM_OFF);
     lv_slider_set_value(quick_brightness_, controls.brightness, LV_ANIM_OFF);
     lv_obj_set_state(quick_mic_, LV_STATE_CHECKED, controls.muted);
@@ -368,6 +655,7 @@ void RoundAmoledDisplay::SetWifiStatus(bool connected, const char*, const char*)
 
 void RoundAmoledDisplay::UpdatePromptVisibility() {
     const bool show_prompts = requested_screen_on_.load() && !overlay_active_ && !quick_visible_ &&
+                              (!practice_panel_ || lv_obj_is_hidden(practice_panel_)) &&
                               state_ != DeviceState::Sleeping;
     const char* status = XiaoAnStatusText(state_, emotion_);
     if (show_prompts && status) {
@@ -385,8 +673,9 @@ void RoundAmoledDisplay::SetState(DeviceState state, const char*) {
         state_ = state;
         emotion_ = Emotion::Neutral;
     }
+    if (practice_.page == PracticePage::Available && state != DeviceState::Idle) practice_menu_ = false;
     theme_.SetState(state);
-    UpdatePromptVisibility();
+    RefreshVisibility();
     bsp_display_unlock();
 }
 
@@ -396,7 +685,7 @@ void RoundAmoledDisplay::SetEmotion(Emotion emotion) {
     }
     emotion_ = emotion;
     theme_.SetEmotion(emotion);
-    UpdatePromptVisibility();
+    RefreshVisibility();
     bsp_display_unlock();
 }
 
@@ -417,9 +706,11 @@ void RoundAmoledDisplay::SetPowerStatus(const PowerStatus& power) {
     if (power_changed && quick_visible_) UpdateQuickStatus();
     // Retry pending screen changes if an earlier call could not lock LVGL.
     ApplyBrightnessLocked();
-    if (!requested_screen_on_.load()) SetQuickPanelVisible(false);
-    theme_.SetScreenVisible(requested_screen_on_.load() && !quick_visible_);
-    UpdatePromptVisibility();
+    if (!requested_screen_on_.load()) {
+        practice_menu_ = false;
+        SetQuickPanelVisible(false);
+    }
+    RefreshVisibility();
     bsp_display_unlock();
 }
 
@@ -438,6 +729,7 @@ void RoundAmoledDisplay::ShowProvisioning(const char* ap_ssid, const char* ip_ad
         return;
     }
     if (ap_ssid && ap_ssid[0] != '\0') {
+        practice_menu_ = false;
         SetQuickPanelVisible(false);
         char buf[96];
         std::snprintf(buf, sizeof(buf), "热点: %s", ap_ssid);
@@ -459,7 +751,7 @@ void RoundAmoledDisplay::ShowProvisioning(const char* ap_ssid, const char* ip_ad
         lv_obj_set_hidden(prov_panel_, true);
         overlay_active_ = (pair_panel_ && !lv_obj_is_hidden(pair_panel_));
     }
-    UpdatePromptVisibility();
+    RefreshVisibility();
     lv_obj_invalidate(lv_screen_active());
     bsp_display_unlock();
 }
@@ -498,6 +790,7 @@ void RoundAmoledDisplay::ShowPairingCode(const char* code, const char* hint) {
     }
     const bool was_hidden = lv_obj_is_hidden(pair_panel_);
     if (code && code[0] != '\0') {
+        practice_menu_ = false;
         SetQuickPanelVisible(false);
         if (IsAsciiOnly(code)) {
 #if LV_FONT_MONTSERRAT_28
@@ -525,7 +818,7 @@ void RoundAmoledDisplay::ShowPairingCode(const char* code, const char* hint) {
             lv_obj_invalidate(lv_screen_active());
         }
     }
-    UpdatePromptVisibility();
+    RefreshVisibility();
     bsp_display_unlock();
 }
 
@@ -552,9 +845,11 @@ void RoundAmoledDisplay::SetScreenOn(bool on) {
     if (on) requested_brightness_.store(brightness_percent_);
     requested_screen_on_.store(on);
     if (bsp_display_lock(kLockTimeoutMs) == ESP_OK) {
-        if (!on) SetQuickPanelVisible(false);
-        theme_.SetScreenVisible(on && !quick_visible_);
-        UpdatePromptVisibility();
+        if (!on) {
+            practice_menu_ = false;
+            SetQuickPanelVisible(false);
+        }
+        RefreshVisibility();
         ApplyBrightnessLocked();
         bsp_display_unlock();
     }

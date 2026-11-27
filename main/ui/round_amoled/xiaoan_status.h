@@ -7,7 +7,8 @@ namespace agentsphere {
 
 constexpr const char* XiaoAnStatusText(DeviceState state, Emotion emotion) {
     switch (state) {
-        case DeviceState::Starting: return "正在启动";
+        case DeviceState::Starting:
+            return emotion == Emotion::Thinking ? "正在搜索网络..." : "正在启动";
         case DeviceState::WifiConfiguring: return "配网中";
         case DeviceState::Activating:
             return emotion == Emotion::Confused ? "配对失败，请重试" : "正在检查绑定";

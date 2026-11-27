@@ -23,6 +23,7 @@ endif()
 if(CONFIG_AS_ENABLE_LVGL)
     list(APPEND APP_SRCS
         "ui/fonts/font_zh_18.c"
+        "ui/fonts/font_practice_zh_16.c"
         "ui/round_amoled/round_display.cc"
         "ui/round_amoled/theme_renderer.cc"
         "ui/round_amoled/xiaoan_avatar.cc"
@@ -34,6 +35,7 @@ if(CONFIG_AS_ENABLE_LVGL)
     if(NOT XIAOAN_ASSET_BYTES EQUAL XIAOAN_EXPECTED_BYTES)
         message(FATAL_ERROR "XiaoAn artwork has an invalid frame count or dimensions")
     endif()
+    list(APPEND APP_ASSETS "ui/fonts/practice_zh_bitmap.a2")
 endif()
 
 idf_component_register(

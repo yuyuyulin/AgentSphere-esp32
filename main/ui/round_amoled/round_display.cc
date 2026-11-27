@@ -2,6 +2,7 @@
 
 #if CONFIG_AS_ENABLE_LVGL
 
+#include <algorithm>
 #include <cstdio>
 #include <cstring>
 
@@ -16,6 +17,9 @@ namespace agentsphere {
 namespace {
 constexpr const char* kTag = "RoundDisplay";
 constexpr uint32_t kLockTimeoutMs = 100;
+constexpr uint32_t kCaptionScrollIntervalMs = 100;
+constexpr uint32_t kCaptionScrollDelayMs = 1500;
+constexpr int32_t kCaptionScrollStep = 2;
 
 bool IsAsciiOnly(const char* s) {
     if (!s) return true;
@@ -370,9 +374,31 @@ void RoundAmoledDisplay::CreatePracticePanel(lv_obj_t* parent) {
     practice_status_ = label("", 248);
     lv_obj_set_width(practice_status_, 312);
     lv_obj_set_style_text_line_space(practice_status_, 4, 0);
-    practice_caption_ = label("", 148);
-    lv_obj_set_size(practice_caption_, 296, 120);
-    lv_label_set_long_mode(practice_caption_, LV_LABEL_LONG_MODE_DOTS);
+    practice_caption_view_ = lv_obj_create(practice_panel_);
+    lv_obj_remove_style_all(practice_caption_view_);
+    lv_obj_set_size(practice_caption_view_, 310, 178);
+    lv_obj_align(practice_caption_view_, LV_ALIGN_TOP_MID, 0, 151);
+    lv_obj_set_scrollable(practice_caption_view_, true);
+    lv_obj_set_scroll_dir(practice_caption_view_, LV_DIR_VER);
+    lv_obj_set_scroll_chain_hor(practice_caption_view_, false);
+    lv_obj_set_scroll_chain_ver(practice_caption_view_, false);
+    lv_obj_set_scroll_elastic(practice_caption_view_, false);
+    lv_obj_set_scrollbar_mode(practice_caption_view_, LV_SCROLLBAR_MODE_AUTO);
+    lv_obj_set_style_width(practice_caption_view_, 3, LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_color(practice_caption_view_, lv_color_hex(0x79B4A5), LV_PART_SCROLLBAR);
+    lv_obj_set_style_bg_opa(practice_caption_view_, LV_OPA_60, LV_PART_SCROLLBAR);
+    lv_obj_add_event_cb(practice_caption_view_, &RoundAmoledDisplay::OnCaptionScroll,
+                        LV_EVENT_SCROLL_BEGIN, this);
+
+    practice_caption_ = lv_label_create(practice_caption_view_);
+    lv_obj_set_width(practice_caption_, 284);
+    lv_obj_set_style_text_font(practice_caption_, &font_practice_zh_16, 0);
+    lv_obj_set_style_text_color(practice_caption_, lv_color_hex(0xE4F3EE), 0);
+    lv_obj_set_style_text_line_space(practice_caption_, 4, 0);
+    lv_obj_align(practice_caption_, LV_ALIGN_TOP_MID, 0, 0);
+    lv_label_set_text_static(practice_caption_, "");
+    caption_timer_ = lv_timer_create(&RoundAmoledDisplay::OnCaptionTimer, kCaptionScrollIntervalMs, this);
+    if (caption_timer_) lv_timer_pause(caption_timer_);
 
     // Prominent English learning icon card ("ABC" + "开始练习") shown on left swipe.
     // Disable default LVGL button shadows to keep CO5300 partial flushes crisp and avoid extra shadow buffers.
@@ -423,6 +449,7 @@ void RoundAmoledDisplay::CreatePracticePanel(lv_obj_t* parent) {
         return obj;
     };
     practice_repeat_ = button("重听", 116, -68);
+    practice_translate_ = button("翻译", 86, 0, &practice_translate_label_);
     practice_back_ = button("返回", 116, 0, &practice_back_label_);
     lv_obj_set_hidden(practice_panel_, true);
 }
@@ -435,11 +462,67 @@ void RoundAmoledDisplay::OnPracticeAction(lv_event_t* e) {
         self->PostQuickEvent(AppEventType::PracticeEnter);
     } else if (target == self->practice_repeat_) {
         self->PostQuickEvent(AppEventType::PracticeRepeat);
+    } else if (target == self->practice_translate_) {
+        self->caption_translation_visible_ = !self->caption_translation_visible_;
+        self->UpdatePracticeCaption(false);
+        self->PostQuickEvent(AppEventType::DisplayActivity);
     } else {
         self->practice_menu_ = false;
         self->RefreshVisibility();
         self->PostQuickEvent(AppEventType::PracticeExit);
     }
+}
+
+void RoundAmoledDisplay::OnCaptionScroll(lv_event_t* e) {
+    auto* self = static_cast<RoundAmoledDisplay*>(lv_event_get_user_data(e));
+    auto* indev = lv_indev_active();
+    if (indev && lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER &&
+        lv_indev_get_scroll_obj(indev) == self->practice_caption_view_) {
+        self->caption_manual_scroll_ = true;
+        self->UpdateCaptionTimer();
+        self->PostQuickEvent(AppEventType::DisplayActivity);
+    }
+}
+
+void RoundAmoledDisplay::OnCaptionTimer(lv_timer_t* timer) {
+    auto* self = static_cast<RoundAmoledDisplay*>(lv_timer_get_user_data(timer));
+    if (lv_tick_elaps(self->caption_start_tick_) < kCaptionScrollDelayMs) return;
+    auto* view = self->practice_caption_view_;
+    const int32_t remaining = lv_obj_get_scroll_bottom(view);
+    if (remaining <= 0) {
+        lv_timer_pause(timer);
+        return;
+    }
+    lv_obj_scroll_by(view, 0, -std::min(kCaptionScrollStep, remaining), LV_ANIM_OFF);
+}
+
+void RoundAmoledDisplay::UpdateCaptionTimer() {
+    if (!caption_timer_) return;
+    if (practice_shown_ && practice_.page == PracticePage::Active && !practice_.caption.empty() &&
+        !caption_manual_scroll_) {
+        lv_timer_resume(caption_timer_);
+    } else {
+        lv_timer_pause(caption_timer_);
+    }
+}
+
+void RoundAmoledDisplay::UpdatePracticeCaption(bool reset_scroll) {
+    const int32_t previous_scroll = reset_scroll ? 0 : lv_obj_get_scroll_y(practice_caption_view_);
+    if (reset_scroll) {
+        caption_translation_visible_ = false;
+        caption_manual_scroll_ = false;
+    }
+    caption_start_tick_ = lv_tick_get();
+    if (caption_translation_visible_) {
+        const auto text = practice_.caption + "\n\n" + practice_.caption_zh;
+        lv_label_set_text(practice_caption_, text.c_str());
+    } else {
+        lv_label_set_text(practice_caption_, practice_.caption.c_str());
+    }
+    lv_label_set_text_static(practice_translate_label_, caption_translation_visible_ ? "收起" : "翻译");
+    lv_obj_update_layout(practice_caption_view_);
+    lv_obj_scroll_to_y(practice_caption_view_, previous_scroll, LV_ANIM_OFF);
+    UpdateCaptionTimer();
 }
 
 const char* RoundAmoledDisplay::PracticeStatus() const {
@@ -466,12 +549,15 @@ void RoundAmoledDisplay::RefreshVisibility() {
     const bool show = on && !overlay_active_ && !quick_visible_ && (practice_menu_ || busy_or_active);
     const bool in_menu = !busy_or_active;
     const bool is_active = practice_.page == PracticePage::Active;
+    const bool can_translate = is_active && !practice_.caption.empty() && !practice_.caption_zh.empty();
     const bool layout_changed = (show != practice_shown_) ||
-                                (show && (in_menu != practice_in_menu_ || is_active != practice_active_layout_));
+                                (show && (in_menu != practice_in_menu_ || is_active != practice_active_layout_ ||
+                                          can_translate != practice_translation_layout_));
     practice_shown_ = show;
     if (show) {
         practice_in_menu_ = in_menu;
         practice_active_layout_ = is_active;
+        practice_translation_layout_ = can_translate;
     }
 
     lv_obj_set_hidden(practice_panel_, !show);
@@ -490,7 +576,8 @@ void RoundAmoledDisplay::RefreshVisibility() {
         if (!lv_color_eq(lv_obj_get_style_text_color(practice_status_, LV_PART_MAIN), status_color)) {
             lv_obj_set_style_text_color(practice_status_, status_color, 0);
         }
-        lv_obj_set_hidden(practice_caption_, practice_.page != PracticePage::Active || practice_.caption.empty());
+        lv_obj_set_hidden(practice_caption_view_, !is_active || practice_.caption.empty());
+        lv_obj_set_hidden(practice_translate_, !can_translate);
         lv_obj_set_hidden(practice_enter_, !in_menu);
         lv_obj_set_hidden(practice_repeat_, practice_.page != PracticePage::Active);
         lv_obj_set_state(practice_repeat_, LV_STATE_DISABLED, !practice_.can_repeat);
@@ -501,11 +588,17 @@ void RoundAmoledDisplay::RefreshVisibility() {
             }
         }
         if (layout_changed) {
-            lv_obj_align(practice_back_, LV_ALIGN_BOTTOM_MID, is_active ? 68 : 0, -64);
+            const int width = can_translate ? 86 : 116;
+            lv_obj_set_width(practice_repeat_, width);
+            lv_obj_set_width(practice_back_, width);
+            const int offset = can_translate ? 97 : 68;
+            lv_obj_align(practice_repeat_, LV_ALIGN_BOTTOM_MID, -offset, -64);
+            lv_obj_align(practice_back_, LV_ALIGN_BOTTOM_MID, is_active ? offset : 0, -64);
         }
     }
     if (layout_changed) {
         lv_obj_invalidate(lv_screen_active());
+        UpdateCaptionTimer();
     }
     theme_.SetScreenVisible(on && !quick_visible_ && !show);
     UpdatePromptVisibility();
@@ -517,10 +610,10 @@ void RoundAmoledDisplay::SetPractice(const PracticeView& practice) {
         if (practice_.page == PracticePage::Active && practice.page != PracticePage::Active) {
             practice_menu_ = false;
         }
-        const bool caption_changed = practice_.caption != practice.caption;
+        const bool caption_changed = !practice_.SameCaption(practice);
         practice_ = practice;
-        if (caption_changed) lv_label_set_text(practice_caption_, practice_.caption.c_str());
         RefreshVisibility();
+        if (caption_changed) UpdatePracticeCaption(true);
     }
     bsp_display_unlock();
 }

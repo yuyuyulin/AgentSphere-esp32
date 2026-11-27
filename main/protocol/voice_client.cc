@@ -21,7 +21,8 @@ constexpr int64_t kSecond = 1000000;
 constexpr int64_t kConnectTimeoutSec = 18;
 constexpr int64_t kHelloTimeoutSec = 10;
 constexpr int64_t kSceneTimeoutUs = 10 * kSecond;
-constexpr size_t kCaptionBytes = 240;
+constexpr size_t kCaptionBytes = 1024;
+constexpr char kBilingualFeature[] = "practice_bilingual_v1";
 // The 60 ms Opus encoder exceeded 16 KiB on the 1.75C.
 // Keep its stack in PSRAM so Wi-Fi and DMA can use internal RAM.
 constexpr uint32_t kVoiceStackBytes = 40 * 1024;
@@ -119,6 +120,11 @@ bool VoiceClient::Start(AudioCodec* audio, QueueHandle_t events, const std::stri
     url_ = url;
     headers_ = "Authorization: Bearer " + token + "\r\nX-Device-Uid: " + uid + "\r\nX-Protocol-Version: 1\r\n";
     stop_ = local_error_ = reconnect_now_ = false;
+    {
+        std::lock_guard<std::mutex> lock(output_gate_);
+        practice_check_pending_ = false;
+        practice_notice_ = PracticeNotice::None;
+    }
     command_ = Command::None;
     SetState(VoiceState::Connecting);
     const BaseType_t started = xTaskCreatePinnedToCoreWithCaps(
@@ -159,7 +165,8 @@ void VoiceClient::SetState(VoiceState state) {
 bool VoiceClient::Button() {
     std::lock_guard<std::mutex> lock(output_gate_);
     if (command_ == Command::ExitPractice || command_ == Command::EnterPractice ||
-        command_ == Command::RepeatPractice) return false;
+        command_ == Command::CheckPractice || command_ == Command::RepeatPractice ||
+        practice_check_pending_) return false;
     switch (state_.load()) {
         case VoiceState::Ready: {
             if (practice_open_requested_ && !practice_active_) return false;
@@ -188,10 +195,23 @@ bool VoiceClient::Button() {
 
 bool VoiceClient::EnterPractice() {
     std::lock_guard<std::mutex> lock(output_gate_);
-    if (state_ != VoiceState::Ready || !practice_capable_ || practice_active_ ||
-        command_ != Command::None) return false;
-    practice_open_requested_ = true;
-    command_ = Command::EnterPractice;
+    if (!has_practice_ui_ || practice_active_ || practice_check_pending_) return false;
+    const auto state = state_.load();
+    if (state == VoiceState::Disabled || state == VoiceState::Connecting) {
+        if (state == VoiceState::Connecting) reconnect_now_ = true;
+        practice_notice_ = PracticeNotice::Offline;
+        return false;
+    }
+    if (state != VoiceState::Ready || command_ != Command::None) return false;
+    practice_notice_ = PracticeNotice::None;
+    if (practice_capable_) {
+        practice_open_requested_ = true;
+        command_ = Command::EnterPractice;
+        return true;
+    }
+    practice_check_pending_ = true;
+    command_ = Command::CheckPractice;
+    ESP_LOGI(kTag, "English practice tapped -> re-checking capability with server");
     return true;
 }
 
@@ -205,6 +225,8 @@ bool VoiceClient::RepeatPractice() {
 
 void VoiceClient::ExitPractice() {
     std::lock_guard<std::mutex> lock(output_gate_);
+    practice_notice_ = PracticeNotice::None;
+    practice_check_pending_ = false;
     if (!practice_open_requested_.exchange(false)) return;
     command_ = Command::ExitPractice;
     if (state_ == VoiceState::Speaking) audio_->StopOutput();
@@ -213,13 +235,23 @@ void VoiceClient::ExitPractice() {
 PracticeView VoiceClient::GetPracticeView() {
     std::lock_guard<std::mutex> lock(output_gate_);
     const auto state = state_.load();
-    if (!practice_capable_ || state == VoiceState::Reauth) return {};
+    if (!has_practice_ui_ || state == VoiceState::Reauth) return {};
+    if (practice_check_pending_) return {PracticePage::Checking, false, {}};
+    if (practice_open_requested_) {
+        if (!practice_active_) return {PracticePage::Entering, false, {}};
+        return {PracticePage::Active, practice_repeat_ && state == VoiceState::Ready,
+                practice_caption_, practice_caption_zh_, practice_caption_revision_};
+    }
     if (state == VoiceState::Disabled || state == VoiceState::Connecting) {
         return {PracticePage::Offline, false, {}};
     }
-    if (!practice_open_requested_) return {PracticePage::Available, false, {}};
-    if (!practice_active_) return {PracticePage::Entering, false, {}};
-    return {PracticePage::Active, practice_repeat_ && state == VoiceState::Ready, practice_caption_};
+    if (practice_notice_ == PracticeNotice::Unavailable) {
+        return {PracticePage::Unavailable, false, {}};
+    }
+    if (practice_notice_ == PracticeNotice::Offline) {
+        return {PracticePage::Offline, false, {}};
+    }
+    return {PracticePage::Available, false, {}};
 }
 
 void VoiceClient::Cancel(bool flipped) {
@@ -244,14 +276,21 @@ void VoiceClient::Run() {
     while (!stop_) {
         negotiated_ = link_error_ = false;
         SetState(VoiceState::Connecting);
-        if (socket_.Open(url_, headers_)) Serve();
+        const bool ok = socket_.Open(url_, headers_) && Serve();
         const bool revoked = socket_.unauthorized() || state_ == VoiceState::Reauth;
         EndTurn();
         ResetPractice();
+        if (!ok && practice_check_pending_.exchange(false)) {
+            std::lock_guard<std::mutex> lock(output_gate_);
+            practice_notice_ = PracticeNotice::Offline;
+        }
         command_ = Command::None;
         socket_.Close();
-        if (revoked) practice_capable_ = false;
         if (revoked) {
+            practice_capable_ = false;
+            std::lock_guard<std::mutex> lock(output_gate_);
+            practice_check_pending_ = false;
+            practice_notice_ = PracticeNotice::None;
             SetState(VoiceState::Reauth);
             break;
         }
@@ -292,6 +331,7 @@ bool VoiceClient::Serve() {
         auto* features = cJSON_AddArrayToObject(hello.get(), "features");
         cJSON_AddItemToArray(features, cJSON_CreateString(kEnglishScene));
         cJSON_AddItemToArray(features, cJSON_CreateString("captions_v1"));
+        cJSON_AddItemToArray(features, cJSON_CreateString(kBilingualFeature));
     }
     auto* fmt = cJSON_AddObjectToObject(hello.get(), "audio");
     cJSON_AddStringToObject(fmt, "format", "opus");
@@ -311,6 +351,10 @@ bool VoiceClient::Serve() {
 
 void VoiceClient::Step() {
     const auto cmd = command_.exchange(Command::None);
+    if (cmd == Command::CheckPractice) {
+        link_error_ = reconnect_now_ = true;
+        return;
+    }
     if (cmd == Command::EnterPractice) {
         if (state_ == VoiceState::Ready && practice_capable_ && practice_open_requested_) BeginPractice();
         else practice_open_requested_ = false;
@@ -404,7 +448,7 @@ void VoiceClient::FinishRecording(const char* reason) {
 void VoiceClient::EndTurn() {
     turn_.clear();
     delivery_.clear();
-    opening_turn_ = false;
+    opening_turn_ = replay_turn_ = false;
     recording_acknowledged_ = true;
     accepting_audio_ = received_stop_ = false;
     if (state_ == VoiceState::Speaking) audio_->StopOutput();
@@ -444,6 +488,7 @@ void VoiceClient::BeginPractice() {
 }
 
 void VoiceClient::BeginRepeat() {
+    replay_turn_ = true;
     turn_ = NewTurn();
     deadline_us_ = esp_timer_get_time() + 75 * kSecond;
     SetState(VoiceState::Thinking);
@@ -469,6 +514,7 @@ void VoiceClient::ResetPractice() {
     practice_.Reset();
     practice_active_ = practice_repeat_ = practice_open_requested_ = false;
     practice_caption_.clear();
+    practice_caption_zh_.clear();
 }
 
 void VoiceClient::SendScene(const char* type, const std::string& turn) {
@@ -498,8 +544,17 @@ void VoiceClient::HandleSceneAck(const cJSON* obj) {
             SetState(VoiceState::Thinking);
             break;
         case SceneAck::Rejected:
-            local_error_ = true;
-            [[fallthrough]];
+            if (Field(obj, "code") == "CAPABILITY_DISABLED") {
+                practice_capable_ = false;
+                std::lock_guard<std::mutex> lock(output_gate_);
+                practice_notice_ = PracticeNotice::Unavailable;
+            } else {
+                local_error_ = true;
+            }
+            EndTurn();
+            ResetPractice();
+            SetState(VoiceState::Ready);
+            break;
         case SceneAck::Exited:
             EndTurn();
             ResetPractice();
@@ -549,8 +604,32 @@ void VoiceClient::HandleControl(const cJSON* obj) {
         }
         negotiated_ = true;
         practice_capable_ = has_practice_ui_ && AdvertisesEnglish(obj);
+        const auto* features = cJSON_GetObjectItemCaseSensitive(obj, "features");
+        bilingual_captions_ = practice_capable_ &&
+            cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(features, kBilingualFeature));
         reconnect_now_ = false;
-        ESP_LOGI(kTag, "Voice WSS ready (hello_ack)");
+        ESP_LOGI(kTag, "Voice WSS ready (hello_ack), English practice=%s",
+                 practice_capable_ ? "available" : "unavailable");
+        if (practice_check_pending_.exchange(false)) {
+            if (practice_capable_) {
+                {
+                    std::lock_guard<std::mutex> lock(output_gate_);
+                    practice_notice_ = PracticeNotice::None;
+                    practice_open_requested_ = true;
+                }
+                BeginPractice();
+                return;
+            }
+            {
+                std::lock_guard<std::mutex> lock(output_gate_);
+                practice_notice_ = PracticeNotice::Unavailable;
+            }
+        } else if (practice_capable_) {
+            std::lock_guard<std::mutex> lock(output_gate_);
+            if (practice_notice_ == PracticeNotice::Unavailable || practice_notice_ == PracticeNotice::Offline) {
+                practice_notice_ = PracticeNotice::None;
+            }
+        }
         SetState(VoiceState::Ready);
         return;
     }
@@ -585,6 +664,8 @@ void VoiceClient::HandleControl(const cJSON* obj) {
         }
         if (practice_.phase() == PracticePhase::Active) {
             practice_caption_ = BoundedCaption(Field(obj, "text"));
+            practice_caption_zh_ = bilingual_captions_ ? BoundedCaption(Field(obj, "text_zh")) : "";
+            if (!replay_turn_) ++practice_caption_revision_;
         }
         delivery_ = delivery;
         frame_count_ = 0;

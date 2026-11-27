@@ -45,6 +45,8 @@ private:
     uint32_t tick_count_ = 0;
     int emotion_reset_ticks_ = 0;
     int wifi_connect_timeout_ticks_ = 0;
+    int startup_wifi_grace_ticks_ = 0;
+    int startup_wifi_retry_ticks_ = 0;
     int offline_retry_ticks_ = 0;
     int pairing_remaining_sec_ = 0;
     char pairing_code_active_[16]{};
